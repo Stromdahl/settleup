@@ -1,0 +1,6 @@
+/target
+
+# SQLite database + WAL/SHM sidecar files
+*.db
+*.db-shm
+*.db-wal

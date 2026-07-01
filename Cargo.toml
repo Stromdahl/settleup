@@ -1,0 +1,18 @@
+[package]
+name = "settleup"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+maud = { version = "0.27", features = ["axum"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+qrcode = "0.14"
+rand = "0.9"
+sha2 = "0.10"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_urlencoded = "0.7"
+time = "0.3"
