@@ -79,8 +79,9 @@ only "I care about this" signal is whether recovery was set.
 
 **Decision:** An expense = **single payer, total amount, description, the subset of
 members it's split across, and a split method (equal or exact amounts)**. Anyone can
-edit/delete their own expenses; the owner can edit/delete any. Deletes are **soft**;
-balances recompute.
+delete their own expenses; the owner can delete any. Deletes are **soft**; balances
+recompute. In v1, editing is **delete-and-re-add** — an in-place edit form is a later
+addition, not part of the first slice.
 
 **Why:** Equal covers most of both cases; exact is the escape hatch; subset selection is
 needed at a bar table where not everyone's in on every round. Itemized splitting and
