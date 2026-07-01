@@ -23,6 +23,8 @@ pub struct AppState {
     /// Public base URL (e.g. `https://settleup.example`). If unset, derived from the
     /// request Host header (fine for local use).
     pub base_url: Option<String>,
+    /// Set the `Secure` flag on cookies (enable when served over HTTPS).
+    pub secure_cookies: bool,
 }
 
 // --- Error handling -------------------------------------------------------------
@@ -65,11 +67,12 @@ fn base_url(state: &AppState, headers: &HeaderMap) -> String {
     format!("http://{host}")
 }
 
-fn set_token_cookie(jar: CookieJar, group_id: &str, token: &str) -> CookieJar {
+fn set_token_cookie(jar: CookieJar, group_id: &str, token: &str, secure: bool) -> CookieJar {
     let mut c = Cookie::new(ids::cookie_name(group_id), token.to_string());
     c.set_path("/");
     c.set_http_only(true);
     c.set_same_site(SameSite::Lax);
+    c.set_secure(secure);
     c.set_max_age(time::Duration::days(365));
     jar.add(c)
 }
@@ -141,7 +144,7 @@ pub async fn create_group(
     .await?;
     tx.commit().await?;
 
-    let jar = set_token_cookie(jar, &gid, &token);
+    let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
     Ok((jar, Redirect::to(&format!("/g/{gid}"))))
 }
 
@@ -279,7 +282,7 @@ pub async fn join_group(
         .execute(&st.pool)
         .await?;
     db::touch_group(&st.pool, &gid).await?;
-    let jar = set_token_cookie(jar, &gid, &token);
+    let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
     Ok((jar, Redirect::to(&format!("/g/{gid}"))))
 }
 
@@ -446,13 +449,29 @@ pub async fn mark_settlement(
     if !ids.contains(&form.from_id) || !ids.contains(&form.to_id) {
         return Ok(back);
     }
+    // Clamp to the actual outstanding debt so a double-tap (two people marking the
+    // same suggested payment) can't overshoot and invent a reverse debt.
+    let member_ids: Vec<i64> = members.iter().map(|m| m.id).collect();
+    let payments = db::expense_payments(&st.pool, &gid).await?;
+    let shares = db::expense_share_rows(&st.pool, &gid).await?;
+    let settle_rows = db::settlement_rows(&st.pool, &gid).await?;
+    let balances: HashMap<i64, i64> =
+        settle::net_balances(&member_ids, &payments, &shares, &settle_rows)
+            .into_iter()
+            .collect();
+    let owes = (-balances.get(&form.from_id).copied().unwrap_or(0)).max(0);
+    let owed = balances.get(&form.to_id).copied().unwrap_or(0).max(0);
+    let amount = form.amount_ore.min(owes).min(owed);
+    if amount <= 0 {
+        return Ok(back);
+    }
     sqlx::query(
         "INSERT INTO settlements (group_id, from_id, to_id, amount) VALUES (?, ?, ?, ?)",
     )
     .bind(&gid)
     .bind(form.from_id)
     .bind(form.to_id)
-    .bind(form.amount_ore)
+    .bind(amount)
     .execute(&st.pool)
     .await?;
     db::touch_group(&st.pool, &gid).await?;
@@ -562,6 +581,6 @@ pub async fn recover_submit(
         .bind(&gid)
         .execute(&st.pool)
         .await?;
-    let jar = set_token_cookie(jar, &gid, &token);
+    let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
     Ok((jar, Redirect::to(&format!("/g/{gid}"))).into_response())
 }

@@ -38,7 +38,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let state = AppState { pool, base_url };
+    // Serve Secure cookies when the public URL is HTTPS (override with SETTLEUP_SECURE).
+    let secure_cookies = std::env::var("SETTLEUP_SECURE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or_else(|_| base_url.as_deref().is_some_and(|b| b.starts_with("https")));
+
+    let state = AppState {
+        pool,
+        base_url,
+        secure_cookies,
+    };
     let app = Router::new()
         .route("/", get(handlers::landing).post(handlers::create_group))
         .route("/g/{id}", get(handlers::group_page))
