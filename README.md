@@ -61,6 +61,11 @@ cargo test
 Covers the money parsing, balance math, debt simplification, and the auto-expiry
 cascade.
 
+## License
+
+Licensed under the GNU General Public License v3.0 (`GPL-3.0-only`). See
+[`LICENSE`](LICENSE).
+
 ## Known v1 limitations
 
 - No in-place expense editing (delete + re-add).

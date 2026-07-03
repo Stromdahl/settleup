@@ -2,6 +2,10 @@
 name = "settleup"
 version = "0.1.0"
 edition = "2024"
+description = "A small web app for splitting shared expenses — no accounts, join by link/QR, fewest-payment settle-up. Rust (axum + maud + htmx) + SQLite."
+license = "GPL-3.0-only"
+repository = "https://github.com/Stromdahl/settleup"
+readme = "README.md"
 
 [dependencies]
 axum = "0.8"
