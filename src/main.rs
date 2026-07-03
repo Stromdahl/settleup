@@ -6,6 +6,9 @@ mod money;
 mod settle;
 mod views;
 
+#[cfg(test)]
+mod sim;
+
 use axum::Router;
 use axum::routing::{get, post};
 use handlers::AppState;
