@@ -1,0 +1,9 @@
+# Build artifacts and VCS metadata — never part of the build context.
+target
+.git
+.github
+
+# Local SQLite database + WAL/SHM sidecars (must never leak into an image).
+*.db
+*.db-shm
+*.db-wal
