@@ -102,6 +102,17 @@ already pay her back for June?" for the persistent case.
 **Consequence:** A simplified transfer can be between two people who never directly
 transacted; occasionally surprising but worth it. A "show detail" view can come later.
 
+**Measured:** The simplifier is a greedy largest-debtor-pays-largest-creditor pass; the
+true fewest-transfers problem is NP-hard, so "fewest" is a near-minimum, not a proven
+optimum. The randomized campaign (`src/sim.rs`, `cargo test --release sim_campaign`)
+quantifies the gap: over ~72M random groups checked against an exact-optimum oracle,
+greedy matched the true minimum **99.15%** of the time, and when it didn't the penalty
+was **+1 transfer on average, +3 at most**. An adversarial search over ~270M balance
+vectors could not push the gap past **+3** either — so +3 is effectively the worst case
+at realistic group sizes. Good enough that a smarter (exponential) optimizer isn't worth
+it. The campaign also confirmed money is conserved, balances sum to zero, and the
+suggested transfers settle everyone exactly, across groups from 2 to 800 members.
+
 ## 8. Currency, history, notifications
 
 **Decision:** **Single currency per group, default SEK**, no conversion. A **flat log** of
