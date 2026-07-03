@@ -162,7 +162,26 @@ pub async fn group_page(
 
     let me = match current_member(&st.pool, &jar, &gid).await? {
         Some(m) => m,
-        None => return Ok(views::claim(&group)),
+        None => {
+            // Not a member yet: show the claim/join screen with a little social proof
+            // (who started it, how many are in, the running tab) — all read-only, and
+            // anyone with the link can join and see it anyway.
+            let members = db::list_members(&st.pool, &gid).await?;
+            let member_rows: Vec<views::MemberRow> = members
+                .iter()
+                .map(|m| views::MemberRow {
+                    id: m.id,
+                    name: m.name.clone(),
+                    is_owner: m.is_owner,
+                })
+                .collect();
+            let total: i64 = db::list_expenses(&st.pool, &gid)
+                .await?
+                .iter()
+                .map(|e| e.amount)
+                .sum();
+            return Ok(views::claim(&group, &member_rows, total));
+        }
     };
 
     let members = db::list_members(&st.pool, &gid).await?;
@@ -176,11 +195,14 @@ pub async fn group_page(
     let balances = settle::net_balances(&member_ids, &payments, &shares, &settle_rows);
     let transfers = settle::simplify(&balances);
 
+    let owner_id = members.iter().find(|m| m.is_owner).map(|m| m.id);
     let balance_rows: Vec<views::BalanceRow> = balances
         .iter()
         .map(|&(id, net)| views::BalanceRow {
+            id,
             name: names.get(&id).cloned().unwrap_or_default(),
             net,
+            is_owner: Some(id) == owner_id,
         })
         .collect();
     let transfer_rows: Vec<views::TransferRow> = transfers
