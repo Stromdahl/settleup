@@ -13,6 +13,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
   test:
     name: cargo test
     runs-on: ubuntu-latest
@@ -24,7 +45,7 @@ jobs:
 
   docker:
     name: build & publish image
-    needs: test # the test suite gates the build
+    needs: [fmt, clippy, test] # fmt, clippy, and the test suite all gate the build
     runs-on: ubuntu-latest
     permissions:
       contents: read
