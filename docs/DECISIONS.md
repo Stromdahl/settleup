@@ -129,6 +129,75 @@ designed so a Swish deep-link can hang off "mark paid" later**.
 **Why:** Swish is a natural fit (Swedish context) and a nice v2 touch, but wiring payment
 providers into v1 is scope the core cases don't need.
 
+## 10. Live updates: 5-second polling with out-of-band swaps
+
+**Decision:** Open group pages **live-update** so one person's action shows up on everyone
+else's already-open screen. A hidden htmx poller hits a new read-only `GET /g/{id}/live`
+endpoint **every 5 seconds**, carrying the `(last_active, member_count, closed?)` state it
+last rendered. The server responds one of three ways:
+
+- **`204 No Content`** when nothing changed — htmx swaps nothing. Idle groups cost one
+  indexed read per viewer per tick and no render work.
+- **Out-of-band (OOB) fragment swaps** when `last_active` moved (an expense or settlement
+  on the existing roster) — surgically replaces the read-only regions (settle-up,
+  balances, expense log, payments log, member count) by id, and **never sends the
+  add-expense form**, so in-progress input is safe by construction.
+- **OOB swaps + a dismissible "someone joined — refresh to split with them" notice** when
+  `member_count` grew (a join). A join is ~90% read-only (header count, a net-zero balances
+  row) and only its *tail* — the form's payer/participant selectors — is structural, so it
+  is handled non-destructively as a data change plus a notice, **not** a reload: the
+  newcomer appears in the read-only regions immediately and is one tap away in the form,
+  while whatever the viewer is typing survives untouched. (Injecting the newcomer directly
+  into the selectors via append-style OOB is a deferred v2 polish.)
+- **`HX-Refresh: true`** (a clean full reload) only when `closed?` changed — a close or
+  reopen, which restructures the page (the sticky FAB, the closed banner, the presence of
+  the form itself). This is lossless in practice: a closed group renders no add-expense
+  form, so a close-while-typing destroys only input that couldn't have been submitted, and
+  reopen-while-typing can't happen because no form existed.
+
+Every content-bearing response also **OOB-updates the poller's own token** (its `hx-get`
+URL / `hx-vals`) to the new `(last_active, member_count, closed?)`, so the next tick
+carries what was just rendered. Without this the server sees a stale token and mismatches
+on every tick — the guard silently degrades to unconditional re-swapping for any group
+that has ever changed.
+
+**Why:** Polling — not SSE or WebSocket — is stateless: it works identically on one
+instance or many replicas behind a load balancer, survives restarts and flaky mobile
+connections for free, and adds no dependency or open-connection state. In-process SSE
+would be instant and cheaper-when-idle, but silently breaks the moment a second replica
+exists (a change on one replica never reaches viewers pinned to another) — the wrong bet
+for a "prepare for scale" posture, and SQLite's single-writer, file-local nature means
+genuine multi-replica is a Postgres-sized change away regardless. A bar tab tolerates ~5s
+latency effortlessly. OOB swaps from a single endpoint keep the frequent case to one
+request and surgical DOM updates while leaving the input form untouched; the `last_active`
+version guard (a field every mutation already bumps via `touch_group`) stops idle viewers
+from re-running the balance query and re-swapping five regions forever.
+
+**Consequence:** Only close/reopen cost a full reload — accepted, because they are rare,
+lossless (no submittable input exists across those transitions), and a reload is the
+honest way to rebuild the page structure. A join preserves in-progress input at the price
+that the newcomer isn't selectable in the form until the viewer takes the offered refresh.
+Note `close_group` does **not** bump `last_active` (only `reopen` does), which is exactly
+why close/reopen must be caught by the `closed?` structural signal rather than the version
+guard. Live updates are a **pure progressive enhancement**: they require htmx/JS, and if
+the script never loads the app behaves exactly as before (manual refresh) — nothing
+regresses. Sub-second latency is not available without moving to SSE/WebSocket.
+**Deferred within this slice:** live-updating the pre-join *claim* screen's "N people in ·
+tab total" social proof — an easy follow-up using the same endpoint pattern, left out so
+v1 ships the thing that matters: people at the table watching the tab move.
+
+**Revisit trigger:** htmx was pressure-tested against replacing it and consciously kept —
+the whole live-updates design maps onto core htmx (polling, OOB swaps, `HX-Refresh`, 204),
+so htmx is not the constraint here; the DOM layout and the stateless-polling choice are,
+and both are framework-independent. Reconsider the client stack **only if** we decide we
+want (a) sub-second server *push* (SSE/WebSocket) as the primary transport — then a
+push-first hypermedia framework (Datastar / Hotwire Turbo) fits better than htmx-core +
+the SSE extension — or (b) genuinely app-like client interactivity (optimistic UI,
+live-validating forms, collaborative cursors). Absent one of those, a swap only spends the
+one-script / no-build / small-download properties htmx was chosen for in decision #3.
+
+**Captured from the live-updates grill on 2026-07-05.**
+
 ---
 
 ## Explicitly out of scope for v1
