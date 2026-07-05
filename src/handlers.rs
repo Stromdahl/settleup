@@ -193,6 +193,34 @@ pub async fn group_page(
     Ok(views::group_page(&view))
 }
 
+/// The focused "New expense" screen (frame 04). Members of an open group only; a closed
+/// group or a non-member is bounced back to the group page.
+pub async fn add_expense_page(
+    State(st): State<AppState>,
+    Path(gid): Path<String>,
+    jar: CookieJar,
+) -> Result<Response, AppError> {
+    let group = db::load_group(&st.pool, &gid)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let me = current_member(&st.pool, &jar, &gid)
+        .await?
+        .ok_or(AppError::Forbidden)?;
+    if group.is_closed() {
+        return Ok(Redirect::to(&format!("/g/{gid}")).into_response());
+    }
+    let members = db::list_members(&st.pool, &gid).await?;
+    let member_rows: Vec<views::MemberRow> = members
+        .iter()
+        .map(|m| views::MemberRow {
+            id: m.id,
+            name: m.name.clone(),
+            is_owner: m.is_owner,
+        })
+        .collect();
+    Ok(views::add_expense_page(&group, &me, &member_rows).into_response())
+}
+
 /// The rendered ledger for a group: net balances, the simplified transfers that settle
 /// it, and the expense + settlement logs. Shared by the full page and the live poll so
 /// the two can't drift.

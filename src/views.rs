@@ -224,6 +224,20 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 .joinbar .jb-refresh{font-weight:800;font-size:14px;color:var(--primary-2);white-space:nowrap;}
 .joinbar .jb-x{background:none;border:0;color:var(--soft);font-size:22px;line-height:1;
   padding:0 2px;cursor:pointer;font-family:inherit;}
+
+/* ---- add-expense screen (its own focused page) ---- */
+.addhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
+.addhead h1{font-size:28px;}
+.closebtn{width:34px;height:34px;border-radius:999px;background:var(--surface-3);flex:none;
+  display:inline-flex;align-items:center;justify-content:center;color:var(--muted);}
+.closebtn svg{width:18px;height:18px;stroke-width:2.2;}
+.total-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px;text-align:center;}
+.total-card .k{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--soft);}
+.total-row{display:flex;align-items:baseline;justify-content:center;gap:8px;margin-top:6px;}
+input.total-in{width:auto;min-width:2ch;field-sizing:content;border:0;padding:0;background:transparent;
+  text-align:center;font-size:44px;letter-spacing:-.02em;line-height:1;}
+input.total-in:focus{outline:none;box-shadow:none;border:0;}
+.total-row .cur{font-size:18px;font-weight:800;color:var(--soft);}
 "#;
 
 /// Copy-to-clipboard for the join link. Progressive enhancement only: without JS the
@@ -240,6 +254,7 @@ const P_SHARE: &str =
     r#"<path d="M4 12v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v14"/>"#;
 const P_COPY: &str = r#"<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>"#;
 const P_LOCK: &str = r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>"#;
+const P_CLOSE: &str = r#"<path d="M6 6 18 18"/><path d="M18 6 6 18"/>"#;
 const LOGO: &str = r#"<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M12 16v6"/><path d="M2 12h6"/><path d="M16 12h6"/><path d="m5 5 4.5 4.5"/><path d="m14.5 14.5 4.5 4.5"/><path d="m19 5-4.5 4.5"/><path d="m5 19 4.5-4.5"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>"#;
 
 fn icon(paths: &str, size: u32) -> Markup {
@@ -545,47 +560,10 @@ pub fn group_page(v: &GroupView) -> Markup {
             // ---- Balances, once there's something to balance (live) ----
             (frag_balances(v, false))
 
-            // ---- Add expense (inline; the sticky button jumps here) ----
-            @if !closed {
-                div.section id="add" { "Add expense" }
-                form.card method="post" action={ "/g/" (g.id) "/expenses" } {
-                    label.field-label for="amount" { "Total" }
-                    input.amount-big type="text" name="amount" id="amount" inputmode="decimal" placeholder="0.00";
-
-                    label.field-label for="description" { "What for?" }
-                    input type="text" name="description" id="description" placeholder="Dinner, taxi, groceries…" required;
-
-                    label.field-label for="payer_id" { "Who paid?" }
-                    select name="payer_id" id="payer_id" {
-                        @for m in &v.members {
-                            option value=(m.id) selected[m.id == v.me.id] { (m.name) }
-                        }
-                    }
-
-                    label.field-label { "Split" }
-                    div.seg {
-                        input type="radio" name="method" id="m-equal" value="equal" checked;
-                        label for="m-equal" { "Equally" }
-                        input type="radio" name="method" id="m-exact" value="exact";
-                        label for="m-exact" { "Exact amounts" }
-                    }
-
-                    label.field-label { "Who shares it?" }
-                    p.share-hint { "Tick who's in for an equal split, or type each person's amount for exact." }
-                    div.list {
-                        @for m in &v.members {
-                            div.share-row {
-                                input.chk type="checkbox" name={ "inc_" (m.id) } value="1" checked;
-                                (avatar(&m.name, m.id, "sm"))
-                                span.name { (m.name) }
-                                input type="text" name={ "amt_" (m.id) } inputmode="decimal" placeholder="0.00";
-                            }
-                        }
-                    }
-
-                    button.btn.primary.block type="submit" style="margin-top:20px" { "Add expense" }
-                }
-            }
+            // Add-expense lives on its own focused screen (GET /g/{id}/add), reached via
+            // the sticky button below; the group page itself is entirely read-only, which
+            // is exactly why the live poller can swap any region here without clobbering
+            // in-progress input (there is none). See decisions #10 and #11.
 
             // ---- Expense log + payments, or the member list when empty (live) ----
             (frag_ledger(v, false))
@@ -625,12 +603,77 @@ pub fn group_page(v: &GroupView) -> Markup {
             @if !closed {
                 div.fabbar {
                     div.fabbar-inner {
-                        a.btn.primary.block href="#add" {
+                        a.btn.primary.block href={ "/g/" (g.id) "/add" } {
                             (icon(P_PLUS, 20))
                             @if empty { "Add first expense" } @else { "Add expense" }
                         }
                     }
                 }
+            }
+        },
+    )
+}
+
+/// The "New expense" screen — its own focused page (frame 04 of the redesign), reached
+/// from the group's sticky Add-expense button. Posts to the same `/g/{id}/expenses`
+/// endpoint as before and redirects back to the group on success.
+pub fn add_expense_page(
+    group: &crate::models::Group,
+    me: &crate::models::Member,
+    members: &[MemberRow],
+) -> Markup {
+    let g = group;
+    let cur = &g.currency;
+    layout(
+        &format!("New expense · {}", g.name),
+        "",
+        html! {
+            div.addhead {
+                h1 { "New expense" }
+                a.closebtn href={ "/g/" (g.id) } aria-label="Cancel" { (icon(P_CLOSE, 18)) }
+            }
+            form method="post" action={ "/g/" (g.id) "/expenses" } {
+                div.total-card {
+                    div.k { "Total" }
+                    div.total-row {
+                        input.total-in type="text" name="amount" id="amount"
+                            inputmode="decimal" placeholder="0.00" autofocus;
+                        span.cur { (cur) }
+                    }
+                }
+
+                label.field-label for="description" { "What for?" }
+                input type="text" name="description" id="description" placeholder="Dinner, taxi, groceries…" required;
+
+                label.field-label for="payer_id" { "Who paid?" }
+                select name="payer_id" id="payer_id" {
+                    @for m in members {
+                        option value=(m.id) selected[m.id == me.id] { (m.name) }
+                    }
+                }
+
+                label.field-label { "Split" }
+                div.seg {
+                    input type="radio" name="method" id="m-equal" value="equal" checked;
+                    label for="m-equal" { "Equally" }
+                    input type="radio" name="method" id="m-exact" value="exact";
+                    label for="m-exact" { "Exact amounts" }
+                }
+
+                label.field-label { "Who shares it?" }
+                p.share-hint { "Tick who's in for an equal split, or type each person's amount for exact." }
+                div.list {
+                    @for m in members {
+                        div.share-row {
+                            input.chk type="checkbox" name={ "inc_" (m.id) } value="1" checked;
+                            (avatar(&m.name, m.id, "sm"))
+                            span.name { (m.name) }
+                            input type="text" name={ "amt_" (m.id) } inputmode="decimal" placeholder="0.00";
+                        }
+                    }
+                }
+
+                button.btn.primary.block type="submit" style="margin-top:20px" { "Add expense" }
             }
         },
     )
