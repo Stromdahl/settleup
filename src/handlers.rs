@@ -1,8 +1,8 @@
 //! HTTP route handlers.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::HOST;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -185,13 +185,37 @@ pub async fn group_page(
     };
 
     let members = db::list_members(&st.pool, &gid).await?;
-    let names = name_map(&members);
+    let ledger = build_ledger(&st.pool, &gid, &members, &me).await?;
+    let version = db::group_version(&st.pool, &gid).await?;
+
+    let join_url = format!("{}/g/{}", base_url(&st, &headers), gid);
+    let view = group_view(&group, &me, &join_url, &members, ledger, version);
+    Ok(views::group_page(&view))
+}
+
+/// The rendered ledger for a group: net balances, the simplified transfers that settle
+/// it, and the expense + settlement logs. Shared by the full page and the live poll so
+/// the two can't drift.
+struct Ledger {
+    balances: Vec<views::BalanceRow>,
+    transfers: Vec<views::TransferRow>,
+    expenses: Vec<views::ExpenseRow>,
+    settlements: Vec<views::SettlementRow>,
+}
+
+async fn build_ledger(
+    pool: &SqlitePool,
+    gid: &str,
+    members: &[crate::models::Member],
+    me: &crate::models::Member,
+) -> Result<Ledger, sqlx::Error> {
+    let names = name_map(members);
     let member_ids: Vec<i64> = members.iter().map(|m| m.id).collect();
 
     // Balances + suggested transfers.
-    let payments = db::expense_payments(&st.pool, &gid).await?;
-    let shares = db::expense_share_rows(&st.pool, &gid).await?;
-    let settle_rows = db::settlement_rows(&st.pool, &gid).await?;
+    let payments = db::expense_payments(pool, gid).await?;
+    let shares = db::expense_share_rows(pool, gid).await?;
+    let settle_rows = db::settlement_rows(pool, gid).await?;
     let balances = settle::net_balances(&member_ids, &payments, &shares, &settle_rows);
     let transfers = settle::simplify(&balances);
 
@@ -217,10 +241,10 @@ pub async fn group_page(
         .collect();
 
     // Expense log.
-    let expenses = db::list_expenses(&st.pool, &gid).await?;
+    let expenses = db::list_expenses(pool, gid).await?;
     let mut expense_rows = Vec::with_capacity(expenses.len());
     for e in &expenses {
-        let participant_ids = db::expense_participants(&st.pool, e.id).await?;
+        let participant_ids = db::expense_participants(pool, e.id).await?;
         let participants = participant_ids
             .iter()
             .filter_map(|id| names.get(id).cloned())
@@ -238,7 +262,7 @@ pub async fn group_page(
     }
 
     // Settlement log.
-    let settlements = db::list_settlements(&st.pool, &gid).await?;
+    let settlements = db::list_settlements(pool, gid).await?;
     let settlement_rows: Vec<views::SettlementRow> = settlements
         .iter()
         .map(|s| views::SettlementRow {
@@ -249,7 +273,23 @@ pub async fn group_page(
         })
         .collect();
 
-    let join_url = format!("{}/g/{}", base_url(&st, &headers), gid);
+    Ok(Ledger {
+        balances: balance_rows,
+        transfers: transfer_rows,
+        expenses: expense_rows,
+        settlements: settlement_rows,
+    })
+}
+
+/// Assemble a [`GroupView`] from a group, its members, and a freshly-built ledger.
+fn group_view<'a>(
+    group: &'a crate::models::Group,
+    me: &'a crate::models::Member,
+    join_url: &'a str,
+    members: &[crate::models::Member],
+    ledger: Ledger,
+    version: i64,
+) -> GroupView<'a> {
     let member_rows: Vec<views::MemberRow> = members
         .iter()
         .map(|m| views::MemberRow {
@@ -258,18 +298,79 @@ pub async fn group_page(
             is_owner: m.is_owner,
         })
         .collect();
-
-    let view = GroupView {
-        group: &group,
-        me: &me,
-        join_url: &join_url,
+    GroupView {
+        group,
+        me,
+        join_url,
         members: member_rows,
-        balances: balance_rows,
-        transfers: transfer_rows,
-        expenses: expense_rows,
-        settlements: settlement_rows,
-    };
-    Ok(views::group_page(&view))
+        balances: ledger.balances,
+        transfers: ledger.transfers,
+        expenses: ledger.expenses,
+        settlements: ledger.settlements,
+        version,
+    }
+}
+
+// --- Live updates ---------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct LiveQuery {
+    /// Last-seen change token (see [`db::group_version`]).
+    v: Option<i64>,
+    /// Last-seen member count (to distinguish a join from an expense/settlement).
+    m: Option<i64>,
+    /// Last-seen closed flag, 0 or 1 (to catch close/reopen).
+    c: Option<i64>,
+}
+
+/// The 5-second poll behind live updates. Returns, in decreasing order of cheapness:
+/// `HX-Refresh` when the group was closed/reopened (a structural change the read-only
+/// fragments can't express — rebuild the whole page); `204 No Content` when nothing
+/// changed; or out-of-band fragment swaps for the read-only regions (plus a "someone
+/// joined" notice when the roster grew). The add-expense form is never sent, so
+/// in-progress input is safe. See decision #10 in docs/DECISIONS.md.
+pub async fn live(
+    State(st): State<AppState>,
+    Path(gid): Path<String>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Query(q): Query<LiveQuery>,
+) -> Result<Response, AppError> {
+    let group = db::load_group(&st.pool, &gid)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    // Same visibility rule as the full page: members only.
+    let me = current_member(&st.pool, &jar, &gid)
+        .await?
+        .ok_or(AppError::Forbidden)?;
+
+    let closed = i64::from(group.is_closed());
+    let version = db::group_version(&st.pool, &gid).await?;
+
+    // Structural change (close/reopen): the form, FAB, and banner all appear/disappear,
+    // so a clean full reload is the honest fix. Only fires when the client had a prior
+    // state to compare against.
+    if q.c.is_some() && q.c != Some(closed) {
+        let mut resp = StatusCode::OK.into_response();
+        resp.headers_mut()
+            .insert("HX-Refresh", HeaderValue::from_static("true"));
+        return Ok(resp);
+    }
+
+    // Nothing changed since the client last rendered — swap nothing.
+    if q.v == Some(version) {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+
+    // A data change (expense/settlement) or a join: repaint the read-only regions.
+    let members = db::list_members(&st.pool, &gid).await?;
+    let member_count = members.len() as i64;
+    let joined = q.m.is_some_and(|m| member_count > m);
+
+    let ledger = build_ledger(&st.pool, &gid, &members, &me).await?;
+    let join_url = format!("{}/g/{}", base_url(&st, &headers), gid);
+    let view = group_view(&group, &me, &join_url, &members, ledger, version);
+    Ok(views::live_update(&view, joined).into_response())
 }
 
 // --- Join -----------------------------------------------------------------------
@@ -752,5 +853,128 @@ mod tests {
         );
         let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body).await;
         assert_eq!(expense_count(&pool, &gid).await, 0, "a closed group must not accept new expenses");
+    }
+
+    // --- Live-update poll ---------------------------------------------------------
+
+    async fn body_string(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    fn q(v: Option<i64>, m: Option<i64>, c: Option<i64>) -> Query<LiveQuery> {
+        Query(LiveQuery { v, m, c })
+    }
+
+    async fn poll(pool: &SqlitePool, gid: &str, token: &str, q: Query<LiveQuery>) -> Response {
+        live(
+            State(state(pool.clone())),
+            Path(gid.to_string()),
+            HeaderMap::new(),
+            auth_jar(gid, token),
+            q,
+        )
+        .await
+        .map_err(|_| "live poll should not error for a member")
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn live_unchanged_returns_204() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        let version = db::group_version(&pool, &gid).await.unwrap();
+
+        // Client is fully up to date: current token, 3 members, open.
+        let resp = poll(&pool, &gid, &token, q(Some(version), Some(3), Some(0))).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT, "no change → swap nothing");
+    }
+
+    #[tokio::test]
+    async fn live_expense_change_sends_oob_fragments_without_notice() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        let body = format!(
+            "payer_id={alice}&description=Dinner&method=equal&amount=100&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+        );
+        let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body)
+            .await.map_err(|_| "add failed").unwrap();
+
+        // Client saw an older token but the same 3-member, open roster.
+        let resp = poll(&pool, &gid, &token, q(Some(0), Some(3), Some(0))).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let out = body_string(resp).await;
+        assert!(out.contains("hx-swap-oob"), "must carry out-of-band swaps");
+        assert!(out.contains(r#"id="ls-ledger""#), "read-only ledger region is swapped");
+        assert!(out.contains("Dinner"), "the new expense appears in the swapped ledger");
+        assert!(out.contains(r#"id="ls-poll""#), "poller token is re-sent so the guard advances");
+        assert!(!out.contains("Someone just joined"), "an expense is not a join");
+        assert!(!out.contains(r#"name="amount""#), "the add-expense form is never sent");
+    }
+
+    #[tokio::test]
+    async fn live_join_includes_the_notice() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        // A fourth person joins.
+        sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES (?, 'Dave', 'hd')")
+            .bind(&gid).execute(&pool).await.unwrap();
+        db::touch_group(&pool, &gid).await.unwrap();
+
+        // Client still thinks there are 3 members.
+        let resp = poll(&pool, &gid, &token, q(Some(0), Some(3), Some(0))).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let out = body_string(resp).await;
+        assert!(out.contains("Someone just joined"), "a roster growth shows the join notice");
+        assert!(out.contains("Refresh to include them"));
+    }
+
+    #[tokio::test]
+    async fn live_close_and_reopen_trigger_full_reload() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+
+        // Owner closes; a viewer who last saw it open must be told to reload.
+        sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
+            .bind(&gid).execute(&pool).await.unwrap();
+        let resp = poll(&pool, &gid, &token, q(Some(0), Some(3), Some(0))).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("HX-Refresh").unwrap(), "true", "close → reload");
+
+        // And a viewer who last saw it closed must be told to reload on reopen.
+        sqlx::query("UPDATE groups SET closed_at = NULL WHERE id = ?")
+            .bind(&gid).execute(&pool).await.unwrap();
+        let resp = poll(&pool, &gid, &token, q(Some(0), Some(3), Some(1))).await;
+        assert_eq!(resp.headers().get("HX-Refresh").unwrap(), "true", "reopen → reload");
+    }
+
+    #[tokio::test]
+    async fn live_closed_and_current_does_not_loop_on_refresh() {
+        // A closed group the client already knows is closed, with nothing new, must
+        // return 204 — never a fresh HX-Refresh, or open pages would reload forever.
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
+            .bind(&gid).execute(&pool).await.unwrap();
+        let version = db::group_version(&pool, &gid).await.unwrap();
+
+        let resp = poll(&pool, &gid, &token, q(Some(version), Some(3), Some(1))).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(resp.headers().get("HX-Refresh").is_none());
+    }
+
+    #[tokio::test]
+    async fn live_rejects_non_members() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, _token) = group_with_three(&pool).await;
+        let res = live(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            HeaderMap::new(),
+            CookieJar::new(),
+            q(None, None, None),
+        )
+        .await;
+        assert!(res.is_err(), "a non-member must not receive group fragments");
     }
 }

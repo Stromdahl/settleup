@@ -217,11 +217,20 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
   background:linear-gradient(0deg,var(--bg) 62%,rgba(11,31,34,0));z-index:20;}
 .fabbar-inner{max-width:600px;margin:0 auto;}
 .fabbar .btn{box-shadow:0 12px 30px -10px rgba(215,178,109,.5);}
+
+/* ---- live-update "someone joined" banner ---- */
+.joinbar{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:12px 14px;
+  border-radius:14px;background:var(--surface-3);border:1px solid var(--border-strong);}
+.joinbar .jb-text{flex:1;font-weight:800;font-size:15px;min-width:0;}
+.joinbar .jb-refresh{font-weight:800;font-size:14px;color:var(--gold);white-space:nowrap;}
+.joinbar .jb-x{background:none;border:0;color:var(--soft);font-size:22px;line-height:1;
+  padding:0 2px;cursor:pointer;font-family:inherit;}
 "#;
 
 /// Copy-to-clipboard for the join link. Progressive enhancement only: without JS the
 /// link is still shown and selectable, so nothing depends on this.
-const COPY_JS: &str = r#"document.addEventListener('click',function(e){var b=e.target.closest('[data-copy]');if(!b)return;e.preventDefault();var t=b.getAttribute('data-copy');if(navigator.clipboard){navigator.clipboard.writeText(t).then(function(){var s=b.querySelector('.copy-label')||b;var o=s.textContent;s.textContent='Copied';setTimeout(function(){s.textContent=o;},1200);});}});"#;
+const INLINE_JS: &str = r#"document.addEventListener('click',function(e){var b=e.target.closest('[data-copy]');if(!b)return;e.preventDefault();var t=b.getAttribute('data-copy');if(navigator.clipboard){navigator.clipboard.writeText(t).then(function(){var s=b.querySelector('.copy-label')||b;var o=s.textContent;s.textContent='Copied';setTimeout(function(){s.textContent=o;},1200);});}});
+document.addEventListener('click',function(e){var d=e.target.closest('[data-dismiss]');if(!d)return;var n=d.closest(d.getAttribute('data-dismiss'));if(n)n.remove();});"#;
 
 // --- Inline icons (stroke uses currentColor; sized via width/height, tuned in CSS) ----
 
@@ -317,7 +326,7 @@ fn layout(title: &str, wrap_extra: &str, body: Markup) -> Markup {
                 title { (title) }
                 style { (PreEscaped(STYLES)) }
                 script src="https://unpkg.com/htmx.org@2.0.4" defer {}
-                script { (PreEscaped(COPY_JS)) }
+                script { (PreEscaped(INLINE_JS)) }
             }
             body hx-boost="true" {
                 main class={ "wrap " (wrap_extra) } { (body) }
@@ -468,6 +477,8 @@ pub struct GroupView<'a> {
     pub transfers: Vec<TransferRow>,
     pub expenses: Vec<ExpenseRow>,
     pub settlements: Vec<SettlementRow>,
+    /// Change token for the live-update poller (see `db::group_version`).
+    pub version: i64,
 }
 
 /// The invite block: QR + copyable join link. Rendered as the hero for a brand-new
@@ -498,12 +509,16 @@ pub fn group_page(v: &GroupView) -> Markup {
     let closed = g.is_closed();
     let empty = v.expenses.is_empty();
     let member_count = v.members.len();
-    let expense_total: i64 = v.expenses.iter().map(|e| e.amount).sum();
 
     layout(
         &g.name,
         if closed { "" } else { "has-fab" },
         html! {
+            // Live-update plumbing: a hidden 5s poller and a slot for the "someone
+            // joined" notice. Both are progressive enhancement — inert without htmx.
+            (poller(&g.id, v.version, member_count as i64, i64::from(closed), false))
+            div id="ls-notice" {}
+
             // ---- Header ----
             div.ghead {
                 div {
@@ -512,7 +527,7 @@ pub fn group_page(v: &GroupView) -> Markup {
                     p.sub {
                         "You're " b { (v.me.name) }
                         @if v.me.is_owner { " · owner" }
-                        " · " (member_count) " member" @if member_count != 1 { "s" }
+                        " · " (frag_count(v, false))
                     }
                     @if closed { p style="margin-top:8px" { span.badge { "Closed" } } }
                 }
@@ -525,7 +540,129 @@ pub fn group_page(v: &GroupView) -> Markup {
                 }
             }
 
-            // ---- Hero zone ----
+            // ---- Hero zone (live) ----
+            (frag_hero(v, false))
+
+            // ---- Balances, once there's something to balance (live) ----
+            (frag_balances(v, false))
+
+            // ---- Add expense (inline; the sticky button jumps here) ----
+            @if !closed {
+                div.section id="add" { "Add expense" }
+                form.card method="post" action={ "/g/" (g.id) "/expenses" } {
+                    label.field-label for="amount" { "Total" }
+                    input.amount-big type="text" name="amount" id="amount" inputmode="decimal" placeholder="0.00";
+
+                    label.field-label for="description" { "What for?" }
+                    input type="text" name="description" id="description" placeholder="Dinner, taxi, groceries…" required;
+
+                    label.field-label for="payer_id" { "Who paid?" }
+                    select name="payer_id" id="payer_id" {
+                        @for m in &v.members {
+                            option value=(m.id) selected[m.id == v.me.id] { (m.name) }
+                        }
+                    }
+
+                    label.field-label { "Split" }
+                    div.seg {
+                        input type="radio" name="method" id="m-equal" value="equal" checked;
+                        label for="m-equal" { "Equally" }
+                        input type="radio" name="method" id="m-exact" value="exact";
+                        label for="m-exact" { "Exact amounts" }
+                    }
+
+                    label.field-label { "Who shares it?" }
+                    p.share-hint { "Tick who's in for an equal split, or type each person's amount for exact." }
+                    div.list {
+                        @for m in &v.members {
+                            div.share-row {
+                                input.chk type="checkbox" name={ "inc_" (m.id) } value="1" checked;
+                                (avatar(&m.name, m.id, "sm"))
+                                span.name { (m.name) }
+                                input type="text" name={ "amt_" (m.id) } inputmode="decimal" placeholder="0.00";
+                            }
+                        }
+                    }
+
+                    button.btn.primary.block type="submit" style="margin-top:20px" { "Add expense" }
+                }
+            }
+
+            // ---- Expense log + payments, or the member list when empty (live) ----
+            (frag_ledger(v, false))
+
+            // ---- Owner controls ----
+            @if v.me.is_owner {
+                div.section { "Owner" }
+                @if !g.has_recovery() {
+                    form method="post" action={ "/g/" (g.id) "/recovery" } .note {
+                        div.note-head { (icon(P_LOCK, 17)) span { "This tab disappears in 3 days unless you keep it" } }
+                        div.note-body { "Set a recovery passphrase to keep it forever and restore access on another device." }
+                        input type="password" name="passphrase" id="passphrase" placeholder="Recovery passphrase" required;
+                        div.row-actions { button.btn.primary.sm type="submit" { "Keep this group" } }
+                    }
+                } @else {
+                    div.note {
+                        div.note-head { (icon(P_LOCK, 17)) span { "Recovery passphrase set · this group is kept" } }
+                        @if !closed {
+                            div.note-body { "Settle & close when you're done for the month — you can reopen anytime." }
+                        }
+                    }
+                }
+                div.row-actions {
+                    @if !closed {
+                        form.inlineform method="post" action={ "/g/" (g.id) "/close" } {
+                            button.btn.ghost.sm type="submit" { "Settle & close" }
+                        }
+                    } @else {
+                        form.inlineform method="post" action={ "/g/" (g.id) "/reopen" } {
+                            button.btn.primary.sm type="submit" { "Reopen group" }
+                        }
+                    }
+                }
+            }
+
+            // ---- Sticky primary action ----
+            @if !closed {
+                div.fabbar {
+                    div.fabbar-inner {
+                        a.btn.primary.block href="#add" {
+                            (icon(P_PLUS, 20))
+                            @if empty { "Add first expense" } @else { "Add expense" }
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+// --- Live-update fragments ------------------------------------------------------
+//
+// The read-only regions of the group page, each wrapped in a stable `id` so the live
+// poll can swap them out-of-band without touching the add-expense form between them.
+// Every fragment renders identically in the full page (`oob = false`) and in the poll
+// response (`oob = true`, which adds `hx-swap-oob`). See decision #10 in DECISIONS.md.
+
+/// The member-count text in the header — its own target so a join updates it live.
+fn frag_count(v: &GroupView, oob: bool) -> Markup {
+    let n = v.members.len();
+    html! {
+        span id="ls-count" hx-swap-oob=[oob.then_some("true")] {
+            (n) " member" @if n != 1 { "s" }
+        }
+    }
+}
+
+/// The hero: invite + empty state before any expense, the "settle up" transfers once
+/// there's debt, or the "all settled" state.
+fn frag_hero(v: &GroupView, oob: bool) -> Markup {
+    let g = v.group;
+    let cur = &g.currency;
+    let closed = g.is_closed();
+    let empty = v.expenses.is_empty();
+    html! {
+        div id="ls-hero" hx-swap-oob=[oob.then_some("true")] {
             @if empty {
                 (invite_card(v.join_url, true))
                 div.empty {
@@ -572,8 +709,15 @@ pub fn group_page(v: &GroupView) -> Markup {
                     div.state-sub { "Nobody owes anybody. Add an expense to start the next round." }
                 }
             }
+        }
+    }
+}
 
-            // ---- Balances (once there's something to balance) ----
+/// The per-member balance list (empty until the first expense).
+fn frag_balances(v: &GroupView, oob: bool) -> Markup {
+    let empty = v.expenses.is_empty();
+    html! {
+        div id="ls-balances" hx-swap-oob=[oob.then_some("true")] {
             @if !empty {
                 div.section { "Balances" }
                 div.list {
@@ -599,50 +743,19 @@ pub fn group_page(v: &GroupView) -> Markup {
                     }
                 }
             }
+        }
+    }
+}
 
-            // ---- Add expense (inline; the sticky button jumps here) ----
-            @if !closed {
-                div.section id="add" { "Add expense" }
-                form.card method="post" action={ "/g/" (g.id) "/expenses" } {
-                    label.field-label for="amount" { "Total" }
-                    input.amount-big type="text" name="amount" id="amount" inputmode="decimal" placeholder="0.00";
-
-                    label.field-label for="description" { "What for?" }
-                    input type="text" name="description" id="description" placeholder="Dinner, taxi, groceries…" required;
-
-                    label.field-label for="payer_id" { "Who paid?" }
-                    select name="payer_id" id="payer_id" {
-                        @for m in &v.members {
-                            option value=(m.id) selected[m.id == v.me.id] { (m.name) }
-                        }
-                    }
-
-                    label.field-label { "Split" }
-                    div.seg {
-                        input type="radio" name="method" id="m-equal" value="equal" checked;
-                        label for="m-equal" { "Equally" }
-                        input type="radio" name="method" id="m-exact" value="exact";
-                        label for="m-exact" { "Exact amounts" }
-                    }
-
-                    label.field-label { "Who shares it?" }
-                    p.share-hint { "Tick who's in for an equal split, or type each person's amount for exact." }
-                    div.list {
-                        @for m in &v.members {
-                            div.share-row {
-                                input.chk type="checkbox" name={ "inc_" (m.id) } value="1" checked;
-                                (avatar(&m.name, m.id, "sm"))
-                                span.name { (m.name) }
-                                input type="text" name={ "amt_" (m.id) } inputmode="decimal" placeholder="0.00";
-                            }
-                        }
-                    }
-
-                    button.btn.primary.block type="submit" style="margin-top:20px" { "Add expense" }
-                }
-            }
-
-            // ---- Expense log + payments (once populated) ----
+/// The expense + settlement logs and the secondary invite once populated, or the member
+/// list while the tab is empty.
+fn frag_ledger(v: &GroupView, oob: bool) -> Markup {
+    let g = v.group;
+    let cur = &g.currency;
+    let empty = v.expenses.is_empty();
+    let expense_total: i64 = v.expenses.iter().map(|e| e.amount).sum();
+    html! {
+        div id="ls-ledger" hx-swap-oob=[oob.then_some("true")] {
             @if !empty {
                 div.section.spread {
                     span { "Expenses" }
@@ -700,51 +813,50 @@ pub fn group_page(v: &GroupView) -> Markup {
                     }
                 }
             }
+        }
+    }
+}
 
-            // ---- Owner controls ----
-            @if v.me.is_owner {
-                div.section { "Owner" }
-                @if !g.has_recovery() {
-                    form method="post" action={ "/g/" (g.id) "/recovery" } .note {
-                        div.note-head { (icon(P_LOCK, 17)) span { "This tab disappears in 3 days unless you keep it" } }
-                        div.note-body { "Set a recovery passphrase to keep it forever and restore access on another device." }
-                        input type="password" name="passphrase" id="passphrase" placeholder="Recovery passphrase" required;
-                        div.row-actions { button.btn.primary.sm type="submit" { "Keep this group" } }
-                    }
-                } @else {
-                    div.note {
-                        div.note-head { (icon(P_LOCK, 17)) span { "Recovery passphrase set · this group is kept" } }
-                        @if !closed {
-                            div.note-body { "Settle & close when you're done for the month — you can reopen anytime." }
-                        }
-                    }
-                }
-                div.row-actions {
-                    @if !closed {
-                        form.inlineform method="post" action={ "/g/" (g.id) "/close" } {
-                            button.btn.ghost.sm type="submit" { "Settle & close" }
-                        }
-                    } @else {
-                        form.inlineform method="post" action={ "/g/" (g.id) "/reopen" } {
-                            button.btn.primary.sm type="submit" { "Reopen group" }
-                        }
-                    }
-                }
-            }
+/// The hidden element that polls `/g/{id}/live` every 5s. It carries the state the client
+/// last rendered — change token, member count, closed flag — so the server can answer
+/// 204 / OOB / `HX-Refresh`. `hx-swap="none"` means the body is ignored; only its
+/// out-of-band swaps apply. On a content response the server re-sends this element (OOB)
+/// with a bumped token, so the next tick reflects what was just rendered.
+fn poller(gid: &str, version: i64, member_count: i64, closed_flag: i64, oob: bool) -> Markup {
+    let url = format!("/g/{gid}/live?v={version}&m={member_count}&c={closed_flag}");
+    html! {
+        div id="ls-poll" hx-swap-oob=[oob.then_some("true")]
+            hx-get=(url) hx-trigger="every 5s" hx-swap="none" style="display:none" {}
+    }
+}
 
-            // ---- Sticky primary action ----
-            @if !closed {
-                div.fabbar {
-                    div.fabbar-inner {
-                        a.btn.primary.block href="#add" {
-                            (icon(P_PLUS, 20))
-                            @if empty { "Add first expense" } @else { "Add expense" }
-                        }
-                    }
-                }
+/// The dismissible "someone joined" banner, swapped into the persistent `#ls-notice`
+/// slot. "Refresh" is a boosted navigation that rebuilds the page — and its form — with
+/// the newcomer selectable; the × clears the banner (leaving the slot for the next join).
+fn join_notice(gid: &str) -> Markup {
+    html! {
+        div id="ls-notice" hx-swap-oob="true" {
+            div.joinbar {
+                span.jb-text { "Someone just joined." }
+                a.jb-refresh href={ "/g/" (gid) } { "Refresh to include them" }
+                button.jb-x type="button" data-dismiss=".joinbar" aria-label="Dismiss" { "×" }
             }
-        },
-    )
+        }
+    }
+}
+
+/// The out-of-band response for the 5-second poll: the read-only fragments (never the
+/// input form), a bumped poller token, and — when the roster grew — a join notice.
+pub fn live_update(v: &GroupView, joined: bool) -> Markup {
+    let closed_flag = i64::from(v.group.is_closed());
+    html! {
+        (frag_count(v, true))
+        (frag_hero(v, true))
+        (frag_balances(v, true))
+        (frag_ledger(v, true))
+        (poller(&v.group.id, v.version, v.members.len() as i64, closed_flag, true))
+        @if joined { (join_notice(&v.group.id)) }
+    }
 }
 
 /// Render a QR code for the given URL as an inline SVG string.

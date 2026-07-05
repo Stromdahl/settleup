@@ -85,6 +85,19 @@ pub async fn load_group(pool: &SqlitePool, id: &str) -> Result<Option<Group>, sq
         .await
 }
 
+/// A cheap change token for the live-update poller: `last_active` as Unix epoch
+/// seconds. Every mutation bumps `last_active` (via [`touch_group`] or inline), so a
+/// changed token means "something happened". It is **second-granular** — two mutations
+/// in the same wall-clock second collide on one token, and the later change is picked
+/// up on the next change or a manual refresh. That's acceptable for a casual tab and
+/// matches the second-precision `datetime('now')` the rest of the app already relies on.
+pub async fn group_version(pool: &SqlitePool, group_id: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT CAST(strftime('%s', last_active) AS INTEGER) FROM groups WHERE id = ?")
+        .bind(group_id)
+        .fetch_one(pool)
+        .await
+}
+
 pub async fn list_members(pool: &SqlitePool, group_id: &str) -> Result<Vec<Member>, sqlx::Error> {
     sqlx::query_as::<_, Member>("SELECT * FROM members WHERE group_id = ? ORDER BY id")
         .bind(group_id)
