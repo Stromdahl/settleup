@@ -134,14 +134,12 @@ pub async fn create_group(
         .bind(&currency)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        "INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, ?, ?, 1)",
-    )
-    .bind(&gid)
-    .bind(your_name)
-    .bind(ids::hash_token(&token))
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, ?, ?, 1)")
+        .bind(&gid)
+        .bind(your_name)
+        .bind(ids::hash_token(&token))
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
 
     let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
@@ -478,28 +476,24 @@ pub async fn add_expense(
     let shares: Vec<(i64, i64)> = if method == "exact" {
         let mut v = Vec::new();
         for (k, val) in &fields {
-            if let Some(idstr) = k.strip_prefix("amt_") {
-                if let Ok(id) = idstr.parse::<i64>() {
-                    if member_ids.contains(&id) {
-                        if let Some(a) = parse_amount(val) {
-                            if a > 0 {
-                                v.push((id, a));
-                            }
-                        }
-                    }
-                }
+            if let Some(idstr) = k.strip_prefix("amt_")
+                && let Ok(id) = idstr.parse::<i64>()
+                && member_ids.contains(&id)
+                && let Some(a) = parse_amount(val)
+                && a > 0
+            {
+                v.push((id, a));
             }
         }
         v
     } else {
         let mut included = Vec::new();
         for (k, _) in &fields {
-            if let Some(idstr) = k.strip_prefix("inc_") {
-                if let Ok(id) = idstr.parse::<i64>() {
-                    if member_ids.contains(&id) {
-                        included.push(id);
-                    }
-                }
+            if let Some(idstr) = k.strip_prefix("inc_")
+                && let Ok(id) = idstr.parse::<i64>()
+                && member_ids.contains(&id)
+            {
+                included.push(id);
             }
         }
         included.sort();
@@ -549,12 +543,13 @@ pub async fn delete_expense(
         .ok_or(AppError::Forbidden)?;
     let back = Redirect::to(&format!("/g/{gid}"));
     // Only the payer or the owner may delete.
-    let payer: Option<(i64,)> =
-        sqlx::query_as("SELECT payer_id FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL")
-            .bind(eid)
-            .bind(&gid)
-            .fetch_optional(&st.pool)
-            .await?;
+    let payer: Option<(i64,)> = sqlx::query_as(
+        "SELECT payer_id FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL",
+    )
+    .bind(eid)
+    .bind(&gid)
+    .fetch_optional(&st.pool)
+    .await?;
     let Some((payer_id,)) = payer else {
         return Ok(back);
     };
@@ -616,15 +611,13 @@ pub async fn mark_settlement(
     if amount <= 0 {
         return Ok(back);
     }
-    sqlx::query(
-        "INSERT INTO settlements (group_id, from_id, to_id, amount) VALUES (?, ?, ?, ?)",
-    )
-    .bind(&gid)
-    .bind(form.from_id)
-    .bind(form.to_id)
-    .bind(amount)
-    .execute(&st.pool)
-    .await?;
+    sqlx::query("INSERT INTO settlements (group_id, from_id, to_id, amount) VALUES (?, ?, ?, ?)")
+        .bind(&gid)
+        .bind(form.from_id)
+        .bind(form.to_id)
+        .bind(amount)
+        .execute(&st.pool)
+        .await?;
     db::touch_group(&st.pool, &gid).await?;
     Ok(back)
 }
@@ -751,23 +744,46 @@ mod tests {
         let gid = "g".to_string();
         let token = "alice-device-token".to_string();
         sqlx::query("INSERT INTO groups (id, name) VALUES (?, 'Trip')")
-            .bind(&gid).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, 'Alice', ?, 1)")
-            .bind(&gid).bind(ids::hash_token(&token)).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES (?, 'Bob', 'hb')")
-            .bind(&gid).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES (?, 'Cara', 'hc')")
-            .bind(&gid).execute(pool).await.unwrap();
-        let ids: Vec<i64> = sqlx::query_as::<_, (i64,)>(
-            "SELECT id FROM members WHERE group_id = ? ORDER BY id",
+            .bind(&gid)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, 'Alice', ?, 1)",
         )
-        .bind(&gid).fetch_all(pool).await.unwrap()
-        .into_iter().map(|(x,)| x).collect();
+        .bind(&gid)
+        .bind(ids::hash_token(&token))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES (?, 'Bob', 'hb')")
+            .bind(&gid)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES (?, 'Cara', 'hc')")
+            .bind(&gid)
+            .execute(pool)
+            .await
+            .unwrap();
+        let ids: Vec<i64> =
+            sqlx::query_as::<_, (i64,)>("SELECT id FROM members WHERE group_id = ? ORDER BY id")
+                .bind(&gid)
+                .fetch_all(pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(x,)| x)
+                .collect();
         (gid, [ids[0], ids[1], ids[2]], token)
     }
 
     fn state(pool: SqlitePool) -> AppState {
-        AppState { pool, base_url: None, secure_cookies: false }
+        AppState {
+            pool,
+            base_url: None,
+            secure_cookies: false,
+        }
     }
 
     fn auth_jar(gid: &str, token: &str) -> CookieJar {
@@ -779,7 +795,10 @@ mod tests {
         let amount: i64 = sqlx::query_scalar(
             "SELECT amount FROM expenses WHERE group_id = ? AND deleted_at IS NULL",
         )
-        .bind(gid).fetch_one(pool).await.unwrap();
+        .bind(gid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
         let mut shares = db::expense_share_rows(pool, gid).await.unwrap();
         shares.sort();
         (amount, shares)
@@ -787,7 +806,10 @@ mod tests {
 
     async fn expense_count(pool: &SqlitePool, gid: &str) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM expenses WHERE group_id = ?")
-            .bind(gid).fetch_one(pool).await.unwrap()
+            .bind(gid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -799,14 +821,25 @@ mod tests {
         let body = format!(
             "payer_id={alice}&description=Dinner&method=equal&amount=100&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
         );
-        let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body)
-            .await.map_err(|_| "handler returned an error").unwrap();
+        let _ = add_expense(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            body,
+        )
+        .await
+        .map_err(|_| "handler returned an error")
+        .unwrap();
 
         // 10000 öre / 3 = 3334, 3333, 3333 — the leftover öre goes to the lowest id.
         let (amount, shares) = persisted(&pool, &gid).await;
         assert_eq!(shares, vec![(alice, 3334), (bob, 3333), (cara, 3333)]);
         assert_eq!(amount, 10000);
-        assert_eq!(amount, shares.iter().map(|(_, a)| a).sum::<i64>(), "stored total must equal Σ shares");
+        assert_eq!(
+            amount,
+            shares.iter().map(|(_, a)| a).sum::<i64>(),
+            "stored total must equal Σ shares"
+        );
     }
 
     #[tokio::test]
@@ -815,13 +848,25 @@ mod tests {
         let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
 
         // Alice fronts it; Bob owes 80.00, Cara owes 40.50; Alice isn't splitting.
-        let body = format!("payer_id={alice}&description=Nachos&method=exact&amt_{bob}=80&amt_{cara}=40.50");
-        let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body)
-            .await.map_err(|_| "handler returned an error").unwrap();
+        let body = format!(
+            "payer_id={alice}&description=Nachos&method=exact&amt_{bob}=80&amt_{cara}=40.50"
+        );
+        let _ = add_expense(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            body,
+        )
+        .await
+        .map_err(|_| "handler returned an error")
+        .unwrap();
 
         let (amount, shares) = persisted(&pool, &gid).await;
         assert_eq!(shares, vec![(bob, 8000), (cara, 4050)]);
-        assert_eq!(amount, 12050, "exact total is the sum of the entered amounts");
+        assert_eq!(
+            amount, 12050,
+            "exact total is the sum of the entered amounts"
+        );
 
         // Money conserves end-to-end, through the real balance queries.
         let members = vec![alice, bob, cara];
@@ -845,17 +890,36 @@ mod tests {
         };
 
         // Blank description.
-        let _ = send(format!("payer_id={alice}&description=&method=equal&amount=50&inc_{alice}=on")).await;
+        let _ = send(format!(
+            "payer_id={alice}&description=&method=equal&amount=50&inc_{alice}=on"
+        ))
+        .await;
         // Zero total.
-        let _ = send(format!("payer_id={alice}&description=X&method=equal&amount=0&inc_{alice}=on")).await;
+        let _ = send(format!(
+            "payer_id={alice}&description=X&method=equal&amount=0&inc_{alice}=on"
+        ))
+        .await;
         // No participants selected.
-        let _ = send(format!("payer_id={alice}&description=X&method=equal&amount=50")).await;
+        let _ = send(format!(
+            "payer_id={alice}&description=X&method=equal&amount=50"
+        ))
+        .await;
         // Exact split with only a non-positive amount.
-        let _ = send(format!("payer_id={alice}&description=X&method=exact&amt_{bob}=0")).await;
+        let _ = send(format!(
+            "payer_id={alice}&description=X&method=exact&amt_{bob}=0"
+        ))
+        .await;
         // Payer isn't a member of the group.
-        let _ = send(format!("payer_id=999999&description=X&method=equal&amount=50&inc_{alice}=on")).await;
+        let _ = send(format!(
+            "payer_id=999999&description=X&method=equal&amount=50&inc_{alice}=on"
+        ))
+        .await;
 
-        assert_eq!(expense_count(&pool, &gid).await, 0, "no invalid submission should persist");
+        assert_eq!(
+            expense_count(&pool, &gid).await,
+            0,
+            "no invalid submission should persist"
+        );
     }
 
     #[tokio::test]
@@ -864,8 +928,17 @@ mod tests {
         let (gid, [alice, _bob, _cara], _token) = group_with_three(&pool).await;
         let body = format!("payer_id={alice}&description=X&method=equal&amount=50&inc_{alice}=on");
         // No device cookie → Forbidden.
-        let res = add_expense(State(state(pool.clone())), Path(gid.clone()), CookieJar::new(), body).await;
-        assert!(res.is_err(), "a request with no device cookie must be rejected");
+        let res = add_expense(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            CookieJar::new(),
+            body,
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "a request with no device cookie must be rejected"
+        );
         assert_eq!(expense_count(&pool, &gid).await, 0);
     }
 
@@ -874,13 +947,26 @@ mod tests {
         let pool = db::memory_pool().await;
         let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
         sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
-            .bind(&gid).execute(&pool).await.unwrap();
+            .bind(&gid)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let body = format!(
             "payer_id={alice}&description=Late&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
         );
-        let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body).await;
-        assert_eq!(expense_count(&pool, &gid).await, 0, "a closed group must not accept new expenses");
+        let _ = add_expense(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            body,
+        )
+        .await;
+        assert_eq!(
+            expense_count(&pool, &gid).await,
+            0,
+            "a closed group must not accept new expenses"
+        );
     }
 
     // --- Add-expense screen (GET /g/{id}/add) -------------------------------------
@@ -889,22 +975,45 @@ mod tests {
     async fn add_expense_page_renders_the_form_for_a_member() {
         let pool = db::memory_pool().await;
         let (gid, [_alice, bob, cara], token) = group_with_three(&pool).await;
-        let resp = add_expense_page(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token))
-            .await.map_err(|_| "member should see the form").unwrap();
+        let resp = add_expense_page(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .map_err(|_| "member should see the form")
+        .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let out = body_string(resp).await;
-        assert!(out.contains("New expense"), "the focused screen has its heading");
-        assert!(out.contains(&format!(r#"action="/g/{gid}/expenses""#)), "posts to the expense endpoint");
+        assert!(
+            out.contains("New expense"),
+            "the focused screen has its heading"
+        );
+        assert!(
+            out.contains(&format!(r#"action="/g/{gid}/expenses""#)),
+            "posts to the expense endpoint"
+        );
         // Every member is a selectable participant on this screen.
-        assert!(out.contains(&format!(r#"name="inc_{bob}""#)) && out.contains(&format!(r#"name="inc_{cara}""#)));
+        assert!(
+            out.contains(&format!(r#"name="inc_{bob}""#))
+                && out.contains(&format!(r#"name="inc_{cara}""#))
+        );
     }
 
     #[tokio::test]
     async fn add_expense_page_forbidden_for_non_member() {
         let pool = db::memory_pool().await;
         let (gid, _ids, _token) = group_with_three(&pool).await;
-        let res = add_expense_page(State(state(pool.clone())), Path(gid.clone()), CookieJar::new()).await;
-        assert!(res.is_err(), "a non-member must not reach the add-expense screen");
+        let res = add_expense_page(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            CookieJar::new(),
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "a non-member must not reach the add-expense screen"
+        );
     }
 
     #[tokio::test]
@@ -912,17 +1021,34 @@ mod tests {
         let pool = db::memory_pool().await;
         let (gid, _ids, token) = group_with_three(&pool).await;
         sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
-            .bind(&gid).execute(&pool).await.unwrap();
-        let resp = add_expense_page(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token))
-            .await.map_err(|_| "closed group should redirect, not error").unwrap();
-        assert!(resp.status().is_redirection(), "a closed group bounces back to the group page");
-        assert_eq!(resp.headers().get("location").unwrap(), &format!("/g/{gid}"));
+            .bind(&gid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let resp = add_expense_page(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .map_err(|_| "closed group should redirect, not error")
+        .unwrap();
+        assert!(
+            resp.status().is_redirection(),
+            "a closed group bounces back to the group page"
+        );
+        assert_eq!(
+            resp.headers().get("location").unwrap(),
+            &format!("/g/{gid}")
+        );
     }
 
     // --- Live-update poll ---------------------------------------------------------
 
     async fn body_string(resp: Response) -> String {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
@@ -951,7 +1077,11 @@ mod tests {
 
         // Client is fully up to date: current token, 3 members, open.
         let resp = poll(&pool, &gid, &token, q(Some(version), Some(3), Some(0))).await;
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT, "no change → swap nothing");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "no change → swap nothing"
+        );
     }
 
     #[tokio::test]
@@ -961,19 +1091,41 @@ mod tests {
         let body = format!(
             "payer_id={alice}&description=Dinner&method=equal&amount=100&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
         );
-        let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body)
-            .await.map_err(|_| "add failed").unwrap();
+        let _ = add_expense(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            body,
+        )
+        .await
+        .map_err(|_| "add failed")
+        .unwrap();
 
         // Client saw an older token but the same 3-member, open roster.
         let resp = poll(&pool, &gid, &token, q(Some(0), Some(3), Some(0))).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let out = body_string(resp).await;
         assert!(out.contains("hx-swap-oob"), "must carry out-of-band swaps");
-        assert!(out.contains(r#"id="ls-ledger""#), "read-only ledger region is swapped");
-        assert!(out.contains("Dinner"), "the new expense appears in the swapped ledger");
-        assert!(out.contains(r#"id="ls-poll""#), "poller token is re-sent so the guard advances");
-        assert!(!out.contains("Someone just joined"), "an expense is not a join");
-        assert!(!out.contains(r#"name="amount""#), "the add-expense form is never sent");
+        assert!(
+            out.contains(r#"id="ls-ledger""#),
+            "read-only ledger region is swapped"
+        );
+        assert!(
+            out.contains("Dinner"),
+            "the new expense appears in the swapped ledger"
+        );
+        assert!(
+            out.contains(r#"id="ls-poll""#),
+            "poller token is re-sent so the guard advances"
+        );
+        assert!(
+            !out.contains("Someone just joined"),
+            "an expense is not a join"
+        );
+        assert!(
+            !out.contains(r#"name="amount""#),
+            "the add-expense form is never sent"
+        );
     }
 
     #[tokio::test]
@@ -982,14 +1134,20 @@ mod tests {
         let (gid, _ids, token) = group_with_three(&pool).await;
         // A fourth person joins.
         sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES (?, 'Dave', 'hd')")
-            .bind(&gid).execute(&pool).await.unwrap();
+            .bind(&gid)
+            .execute(&pool)
+            .await
+            .unwrap();
         db::touch_group(&pool, &gid).await.unwrap();
 
         // Client still thinks there are 3 members.
         let resp = poll(&pool, &gid, &token, q(Some(0), Some(3), Some(0))).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let out = body_string(resp).await;
-        assert!(out.contains("Someone just joined"), "a roster growth shows the join notice");
+        assert!(
+            out.contains("Someone just joined"),
+            "a roster growth shows the join notice"
+        );
         assert!(out.contains("Refresh to include them"));
     }
 
@@ -1000,16 +1158,30 @@ mod tests {
 
         // Owner closes; a viewer who last saw it open must be told to reload.
         sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
-            .bind(&gid).execute(&pool).await.unwrap();
+            .bind(&gid)
+            .execute(&pool)
+            .await
+            .unwrap();
         let resp = poll(&pool, &gid, &token, q(Some(0), Some(3), Some(0))).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(resp.headers().get("HX-Refresh").unwrap(), "true", "close → reload");
+        assert_eq!(
+            resp.headers().get("HX-Refresh").unwrap(),
+            "true",
+            "close → reload"
+        );
 
         // And a viewer who last saw it closed must be told to reload on reopen.
         sqlx::query("UPDATE groups SET closed_at = NULL WHERE id = ?")
-            .bind(&gid).execute(&pool).await.unwrap();
+            .bind(&gid)
+            .execute(&pool)
+            .await
+            .unwrap();
         let resp = poll(&pool, &gid, &token, q(Some(0), Some(3), Some(1))).await;
-        assert_eq!(resp.headers().get("HX-Refresh").unwrap(), "true", "reopen → reload");
+        assert_eq!(
+            resp.headers().get("HX-Refresh").unwrap(),
+            "true",
+            "reopen → reload"
+        );
     }
 
     #[tokio::test]
@@ -1019,7 +1191,10 @@ mod tests {
         let pool = db::memory_pool().await;
         let (gid, _ids, token) = group_with_three(&pool).await;
         sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
-            .bind(&gid).execute(&pool).await.unwrap();
+            .bind(&gid)
+            .execute(&pool)
+            .await
+            .unwrap();
         let version = db::group_version(&pool, &gid).await.unwrap();
 
         let resp = poll(&pool, &gid, &token, q(Some(version), Some(3), Some(1))).await;
@@ -1039,6 +1214,9 @@ mod tests {
             q(None, None, None),
         )
         .await;
-        assert!(res.is_err(), "a non-member must not receive group fragments");
+        assert!(
+            res.is_err(),
+            "a non-member must not receive group fragments"
+        );
     }
 }

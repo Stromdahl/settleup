@@ -92,10 +92,12 @@ pub async fn load_group(pool: &SqlitePool, id: &str) -> Result<Option<Group>, sq
 /// up on the next change or a manual refresh. That's acceptable for a casual tab and
 /// matches the second-precision `datetime('now')` the rest of the app already relies on.
 pub async fn group_version(pool: &SqlitePool, group_id: &str) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT CAST(strftime('%s', last_active) AS INTEGER) FROM groups WHERE id = ?")
-        .bind(group_id)
-        .fetch_one(pool)
-        .await
+    sqlx::query_scalar(
+        "SELECT CAST(strftime('%s', last_active) AS INTEGER) FROM groups WHERE id = ?",
+    )
+    .bind(group_id)
+    .fetch_one(pool)
+    .await
 }
 
 pub async fn list_members(pool: &SqlitePool, group_id: &str) -> Result<Vec<Member>, sqlx::Error> {
@@ -211,7 +213,10 @@ pub async fn expense_participants(
 /// cascade ordering: `expenses.payer_id` / `expense_shares.member_id` reference
 /// `members` with no cascade, so a group-first delete could hit a foreign-key error.
 /// Returns the number of groups removed.
-pub async fn expire_stale_groups(pool: &SqlitePool, inactive_days: i64) -> Result<u64, sqlx::Error> {
+pub async fn expire_stale_groups(
+    pool: &SqlitePool,
+    inactive_days: i64,
+) -> Result<u64, sqlx::Error> {
     let cutoff = format!("-{inactive_days} days");
     const STALE: &str =
         "SELECT id FROM groups WHERE recovery IS NULL AND last_active < datetime('now', ?)";
@@ -230,10 +235,12 @@ pub async fn expire_stale_groups(pool: &SqlitePool, inactive_days: i64) -> Resul
             .execute(&mut *tx)
             .await?;
     }
-    let res = sqlx::query("DELETE FROM groups WHERE recovery IS NULL AND last_active < datetime('now', ?)")
-        .bind(&cutoff)
-        .execute(&mut *tx)
-        .await?;
+    let res = sqlx::query(
+        "DELETE FROM groups WHERE recovery IS NULL AND last_active < datetime('now', ?)",
+    )
+    .bind(&cutoff)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(res.rows_affected())
 }
@@ -271,35 +278,62 @@ mod tests {
         sqlx::query("INSERT INTO groups (id, name, last_active) VALUES ('old', 'Old', datetime('now','-4 days'))")
             .execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES ('old', 'A', 'h')")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
         let mid: i64 = sqlx::query_scalar("SELECT id FROM members WHERE group_id='old'")
-            .fetch_one(&pool).await.unwrap();
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let eid: i64 = sqlx::query_scalar(
             "INSERT INTO expenses (group_id, payer_id, amount, description) VALUES ('old', ?, 100, 'x') RETURNING id")
             .bind(mid).fetch_one(&pool).await.unwrap();
-        sqlx::query("INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, 100)")
-            .bind(eid).bind(mid).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, 100)",
+        )
+        .bind(eid)
+        .bind(mid)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // Claimed group (recovery set), even though very stale -> must survive.
         sqlx::query("INSERT INTO groups (id, name, recovery, last_active) VALUES ('keep', 'Keep', 'hash', datetime('now','-9 days'))")
             .execute(&pool).await.unwrap();
         // Recent unclaimed group -> must survive.
-        sqlx::query("INSERT INTO groups (id, name, last_active) VALUES ('new', 'New', datetime('now'))")
-            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO groups (id, name, last_active) VALUES ('new', 'New', datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let removed = expire_stale_groups(&pool, 3).await.unwrap();
         assert_eq!(removed, 1);
 
         let ids: Vec<String> = sqlx::query_as::<_, (String,)>("SELECT id FROM groups ORDER BY id")
-            .fetch_all(&pool).await.unwrap()
-            .into_iter().map(|(x,)| x).collect();
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(x,)| x)
+            .collect();
         assert_eq!(ids, vec!["keep".to_string(), "new".to_string()]);
 
         // Children of the deleted group are gone too.
         let counts: (i64, i64, i64) = (
-            sqlx::query_scalar("SELECT COUNT(*) FROM expense_shares").fetch_one(&pool).await.unwrap(),
-            sqlx::query_scalar("SELECT COUNT(*) FROM expenses").fetch_one(&pool).await.unwrap(),
-            sqlx::query_scalar("SELECT COUNT(*) FROM members").fetch_one(&pool).await.unwrap(),
+            sqlx::query_scalar("SELECT COUNT(*) FROM expense_shares")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            sqlx::query_scalar("SELECT COUNT(*) FROM expenses")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            sqlx::query_scalar("SELECT COUNT(*) FROM members")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
         );
         assert_eq!(counts, (0, 0, 0));
     }

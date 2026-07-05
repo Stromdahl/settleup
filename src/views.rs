@@ -249,10 +249,11 @@ document.addEventListener('click',function(e){var d=e.target.closest('[data-dism
 const P_ARROW: &str = r#"<path d="M5 12h14"/><path d="m13 5 7 7-7 7"/>"#;
 const P_CHECK: &str = r#"<path d="m4 12 5 5L20 6"/>"#;
 const P_PLUS: &str = r#"<path d="M12 5v14"/><path d="M5 12h14"/>"#;
-const P_SHARE: &str =
-    r#"<path d="M4 12v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v14"/>"#;
-const P_COPY: &str = r#"<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>"#;
-const P_LOCK: &str = r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>"#;
+const P_SHARE: &str = r#"<path d="M4 12v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v14"/>"#;
+const P_COPY: &str =
+    r#"<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>"#;
+const P_LOCK: &str =
+    r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>"#;
 const P_CLOSE: &str = r#"<path d="M6 6 18 18"/><path d="M18 6 6 18"/>"#;
 const LOGO: &str = r#"<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M12 16v6"/><path d="M2 12h6"/><path d="M16 12h6"/><path d="m5 5 4.5 4.5"/><path d="m14.5 14.5 4.5 4.5"/><path d="m19 5-4.5 4.5"/><path d="m5 19 4.5-4.5"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>"#;
 
@@ -300,7 +301,9 @@ fn count_word(n: usize) -> String {
     const W: [&str; 10] = [
         "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
     ];
-    W.get(n).map(|s| s.to_string()).unwrap_or_else(|| n.to_string())
+    W.get(n)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| n.to_string())
 }
 
 /// SQLite timestamps are `YYYY-MM-DD HH:MM:SS` (UTC). Render as e.g. `Jul 3 · 21:14`.

@@ -71,8 +71,7 @@ pub fn net_balances(
 /// theoretical minimum number of transfers (that problem is NP-hard), but it is
 /// simple, correct (everyone ends at zero), and produces few transfers in practice.
 pub fn simplify(balances: &[(i64, i64)]) -> Vec<Transfer> {
-    let mut creditors: Vec<(i64, i64)> =
-        balances.iter().copied().filter(|&(_, b)| b > 0).collect();
+    let mut creditors: Vec<(i64, i64)> = balances.iter().copied().filter(|&(_, b)| b > 0).collect();
     let mut debtors: Vec<(i64, i64)> = balances
         .iter()
         .copied()

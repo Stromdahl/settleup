@@ -75,7 +75,12 @@ impl Scenario {
             .collect()
     }
     fn balances(&self) -> Vec<(i64, i64)> {
-        net_balances(&self.members, &self.payments(), &self.shares(), &self.settlements)
+        net_balances(
+            &self.members,
+            &self.payments(),
+            &self.shares(),
+            &self.settlements,
+        )
     }
 }
 
@@ -191,7 +196,11 @@ fn check_scenario(s: &Scenario) {
             let rem = total - base * cnt;
             let min = e.shares.iter().map(|(_, a)| *a).min().unwrap();
             let max = e.shares.iter().map(|(_, a)| *a).max().unwrap();
-            assert!(max - min <= 1, "equal shares differ by more than 1 öre\n{}", ctx());
+            assert!(
+                max - min <= 1,
+                "equal shares differ by more than 1 öre\n{}",
+                ctx()
+            );
             // The first `rem` (lowest-id) members carry the leftover öre.
             for (i, &(_, a)) in e.shares.iter().enumerate() {
                 let expect = base + if (i as i64) < rem { 1 } else { 0 };
@@ -230,8 +239,16 @@ fn check_scenario(s: &Scenario) {
     for t in &transfers {
         assert!(t.amount > 0, "transfer amount must be positive\n{}", ctx());
         assert_ne!(t.from, t.to, "no self-transfer\n{}", ctx());
-        assert!(bmap.get(&t.from).copied().unwrap_or(0) < 0, "payer isn't a debtor\n{}", ctx());
-        assert!(bmap.get(&t.to).copied().unwrap_or(0) > 0, "payee isn't a creditor\n{}", ctx());
+        assert!(
+            bmap.get(&t.from).copied().unwrap_or(0) < 0,
+            "payer isn't a debtor\n{}",
+            ctx()
+        );
+        assert!(
+            bmap.get(&t.to).copied().unwrap_or(0) > 0,
+            "payee isn't a creditor\n{}",
+            ctx()
+        );
     }
 
     // Applying every transfer settles the whole group to exactly zero.
@@ -240,7 +257,11 @@ fn check_scenario(s: &Scenario) {
         *net.get_mut(&t.from).unwrap() += t.amount;
         *net.get_mut(&t.to).unwrap() -= t.amount;
     }
-    assert!(net.values().all(|&v| v == 0), "transfers don't settle everyone\n{}", ctx());
+    assert!(
+        net.values().all(|&v| v == 0),
+        "transfers don't settle everyone\n{}",
+        ctx()
+    );
 
     // Each debtor pays exactly their debt, each creditor receives exactly their due,
     // and a zero-balance member neither pays nor receives anything.
@@ -257,7 +278,12 @@ fn check_scenario(s: &Scenario) {
             assert_eq!(s_out, -b, "debtor must pay exactly their debt\n{}", ctx());
             assert_eq!(r_in, 0, "debtor must not receive\n{}", ctx());
         } else if b > 0 {
-            assert_eq!(r_in, b, "creditor must receive exactly their due\n{}", ctx());
+            assert_eq!(
+                r_in,
+                b,
+                "creditor must receive exactly their due\n{}",
+                ctx()
+            );
             assert_eq!(s_out, 0, "creditor must not pay\n{}", ctx());
         } else {
             assert_eq!(s_out, 0, "zero-balance member must not pay\n{}", ctx());
@@ -266,7 +292,12 @@ fn check_scenario(s: &Scenario) {
     }
 
     // Determinism: simplify is a pure function of the balances.
-    assert_eq!(transfers, simplify(&balances), "simplify not deterministic\n{}", ctx());
+    assert_eq!(
+        transfers,
+        simplify(&balances),
+        "simplify not deterministic\n{}",
+        ctx()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +326,11 @@ fn equal_shares_properties() {
         let shares = equal_shares(total, &members);
 
         assert_eq!(shares.len(), n as usize);
-        assert_eq!(shares.iter().map(|(_, a)| a).sum::<i64>(), total, "must conserve total");
+        assert_eq!(
+            shares.iter().map(|(_, a)| a).sum::<i64>(),
+            total,
+            "must conserve total"
+        );
         assert_eq!(
             shares.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
             members,
@@ -310,7 +345,10 @@ fn equal_shares_properties() {
             assert_eq!(a, expect, "remainder to earliest members");
         }
     }
-    assert!(equal_shares(100, &[]).is_empty(), "empty membership yields no shares");
+    assert!(
+        equal_shares(100, &[]).is_empty(),
+        "empty membership yields no shares"
+    );
 }
 
 /// Money survives a `format_amount` -> `parse_amount` round trip for every value.
@@ -319,7 +357,11 @@ fn money_roundtrips() {
     let mut rng = StdRng::seed_from_u64(7);
     for _ in 0..200_000 {
         let x = rng.random_range(0..1_000_000_000i64);
-        assert_eq!(parse_amount(&format_amount(x)), Some(x), "roundtrip failed for {x}");
+        assert_eq!(
+            parse_amount(&format_amount(x)),
+            Some(x),
+            "roundtrip failed for {x}"
+        );
     }
     assert_eq!(parse_amount(&format_amount(0)), Some(0));
     assert_eq!(parse_amount(&format_amount(5)), Some(5)); // 0.05
@@ -346,18 +388,31 @@ fn demo_prints_sample_bar_tabs() {
     for seed in [1u64, 7, 42, 100, 2024] {
         let s = gen_scenario(seed);
         check_scenario(&s); // the demo doubles as a check
-        let name: HashMap<i64, &str> = s.members.iter().enumerate().map(|(i, &m)| (m, NAMES[i])).collect();
+        let name: HashMap<i64, &str> = s
+            .members
+            .iter()
+            .enumerate()
+            .map(|(i, &m)| (m, NAMES[i]))
+            .collect();
 
         println!(
             "\nBar tab #{} — {}:",
             seed,
-            s.members.iter().map(|m| name[m]).collect::<Vec<_>>().join(", ")
+            s.members
+                .iter()
+                .map(|m| name[m])
+                .collect::<Vec<_>>()
+                .join(", ")
         );
         for e in &s.expenses {
             let split = match e.method {
                 Method::Equal => format!(
                     "split equally among {}",
-                    e.shares.iter().map(|(m, _)| name[m]).collect::<Vec<_>>().join(", ")
+                    e.shares
+                        .iter()
+                        .map(|(m, _)| name[m])
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 Method::Exact => format!(
                     "exact: {}",
@@ -368,10 +423,20 @@ fn demo_prints_sample_bar_tabs() {
                         .join(", ")
                 ),
             };
-            println!("  {:>5} paid {:>10} for {} ({split})", name[&e.payer], format_amount(e.total()), e.desc);
+            println!(
+                "  {:>5} paid {:>10} for {} ({split})",
+                name[&e.payer],
+                format_amount(e.total()),
+                e.desc
+            );
         }
         for &(from, to, amt) in &s.settlements {
-            println!("  payback: {} → {} {}", name[&from], name[&to], format_amount(amt));
+            println!(
+                "  payback: {} → {} {}",
+                name[&from],
+                name[&to],
+                format_amount(amt)
+            );
         }
         println!("  balances:");
         for (m, b) in s.balances() {
@@ -390,7 +455,12 @@ fn demo_prints_sample_bar_tabs() {
         } else {
             println!("  settle up with {} payment(s):", transfers.len());
             for t in &transfers {
-                println!("    {} → {} {}", name[&t.from], name[&t.to], format_amount(t.amount));
+                println!(
+                    "    {} → {} {}",
+                    name[&t.from],
+                    name[&t.to],
+                    format_amount(t.amount)
+                );
             }
         }
     }
@@ -442,22 +512,165 @@ struct Cfg {
 /// near-astronomical amounts, all-equal / all-exact, sparse subsets, and a
 /// "one generous host pays for everything" skew.
 const CONFIGS: [Cfg; 10] = [
-    Cfg { name: "bar-small",      min_m: 2,   max_m: 8,   max_exp: 12,  amt_max: 500_000,               equal_bias: 0.5, density: 0.6, settle_max: 3,  host_skew: false, delete_prob: 0.10 },
-    Cfg { name: "bar-large",      min_m: 8,   max_m: 30,  max_exp: 60,  amt_max: 500_000,               equal_bias: 0.5, density: 0.5, settle_max: 10, host_skew: false, delete_prob: 0.10 },
-    Cfg { name: "big-group",      min_m: 30,  max_m: 300, max_exp: 150, amt_max: 300_000,               equal_bias: 0.6, density: 0.3, settle_max: 20, host_skew: false, delete_prob: 0.05 },
-    Cfg { name: "huge-group",     min_m: 300, max_m: 800, max_exp: 60,  amt_max: 100_000,               equal_bias: 0.6, density: 0.1, settle_max: 20, host_skew: false, delete_prob: 0.05 },
-    Cfg { name: "tiny-amounts",   min_m: 2,   max_m: 12,  max_exp: 20,  amt_max: 50,                    equal_bias: 0.8, density: 0.8, settle_max: 3,  host_skew: false, delete_prob: 0.05 },
-    Cfg { name: "huge-amounts",   min_m: 2,   max_m: 12,  max_exp: 30,  amt_max: 1_000_000_000_000_000, equal_bias: 0.5, density: 0.6, settle_max: 3,  host_skew: false, delete_prob: 0.05 },
-    Cfg { name: "all-equal",      min_m: 2,   max_m: 16,  max_exp: 30,  amt_max: 500_000,               equal_bias: 1.0, density: 0.6, settle_max: 5,  host_skew: false, delete_prob: 0.05 },
-    Cfg { name: "all-exact",      min_m: 2,   max_m: 16,  max_exp: 30,  amt_max: 500_000,               equal_bias: 0.0, density: 0.6, settle_max: 5,  host_skew: false, delete_prob: 0.05 },
-    Cfg { name: "sparse-subsets", min_m: 4,   max_m: 20,  max_exp: 40,  amt_max: 400_000,               equal_bias: 0.5, density: 0.2, settle_max: 5,  host_skew: false, delete_prob: 0.05 },
-    Cfg { name: "generous-host",  min_m: 3,   max_m: 12,  max_exp: 40,  amt_max: 500_000,               equal_bias: 0.5, density: 0.7, settle_max: 5,  host_skew: true,  delete_prob: 0.05 },
+    Cfg {
+        name: "bar-small",
+        min_m: 2,
+        max_m: 8,
+        max_exp: 12,
+        amt_max: 500_000,
+        equal_bias: 0.5,
+        density: 0.6,
+        settle_max: 3,
+        host_skew: false,
+        delete_prob: 0.10,
+    },
+    Cfg {
+        name: "bar-large",
+        min_m: 8,
+        max_m: 30,
+        max_exp: 60,
+        amt_max: 500_000,
+        equal_bias: 0.5,
+        density: 0.5,
+        settle_max: 10,
+        host_skew: false,
+        delete_prob: 0.10,
+    },
+    Cfg {
+        name: "big-group",
+        min_m: 30,
+        max_m: 300,
+        max_exp: 150,
+        amt_max: 300_000,
+        equal_bias: 0.6,
+        density: 0.3,
+        settle_max: 20,
+        host_skew: false,
+        delete_prob: 0.05,
+    },
+    Cfg {
+        name: "huge-group",
+        min_m: 300,
+        max_m: 800,
+        max_exp: 60,
+        amt_max: 100_000,
+        equal_bias: 0.6,
+        density: 0.1,
+        settle_max: 20,
+        host_skew: false,
+        delete_prob: 0.05,
+    },
+    Cfg {
+        name: "tiny-amounts",
+        min_m: 2,
+        max_m: 12,
+        max_exp: 20,
+        amt_max: 50,
+        equal_bias: 0.8,
+        density: 0.8,
+        settle_max: 3,
+        host_skew: false,
+        delete_prob: 0.05,
+    },
+    Cfg {
+        name: "huge-amounts",
+        min_m: 2,
+        max_m: 12,
+        max_exp: 30,
+        amt_max: 1_000_000_000_000_000,
+        equal_bias: 0.5,
+        density: 0.6,
+        settle_max: 3,
+        host_skew: false,
+        delete_prob: 0.05,
+    },
+    Cfg {
+        name: "all-equal",
+        min_m: 2,
+        max_m: 16,
+        max_exp: 30,
+        amt_max: 500_000,
+        equal_bias: 1.0,
+        density: 0.6,
+        settle_max: 5,
+        host_skew: false,
+        delete_prob: 0.05,
+    },
+    Cfg {
+        name: "all-exact",
+        min_m: 2,
+        max_m: 16,
+        max_exp: 30,
+        amt_max: 500_000,
+        equal_bias: 0.0,
+        density: 0.6,
+        settle_max: 5,
+        host_skew: false,
+        delete_prob: 0.05,
+    },
+    Cfg {
+        name: "sparse-subsets",
+        min_m: 4,
+        max_m: 20,
+        max_exp: 40,
+        amt_max: 400_000,
+        equal_bias: 0.5,
+        density: 0.2,
+        settle_max: 5,
+        host_skew: false,
+        delete_prob: 0.05,
+    },
+    Cfg {
+        name: "generous-host",
+        min_m: 3,
+        max_m: 12,
+        max_exp: 40,
+        amt_max: 500_000,
+        equal_bias: 0.5,
+        density: 0.7,
+        settle_max: 5,
+        host_skew: true,
+        delete_prob: 0.05,
+    },
 ];
 
 // Groups kept small (n <= 12) so the exact optimum stays computable (k <= 12).
-const ORACLE_CFG: Cfg = Cfg { name: "oracle", min_m: 2, max_m: 12, max_exp: 14, amt_max: 5_000,     equal_bias: 0.5, density: 0.7, settle_max: 4, host_skew: false, delete_prob: 0.0 };
-const META_CFG: Cfg   = Cfg { name: "meta",   min_m: 2, max_m: 20, max_exp: 30, amt_max: 1_000_000, equal_bias: 0.5, density: 0.5, settle_max: 6, host_skew: false, delete_prob: 0.0 };
-const RT_CFG: Cfg     = Cfg { name: "rt",     min_m: 2, max_m: 30, max_exp: 40, amt_max: 500_000,   equal_bias: 0.5, density: 0.5, settle_max: 8, host_skew: false, delete_prob: 0.05 };
+const ORACLE_CFG: Cfg = Cfg {
+    name: "oracle",
+    min_m: 2,
+    max_m: 12,
+    max_exp: 14,
+    amt_max: 5_000,
+    equal_bias: 0.5,
+    density: 0.7,
+    settle_max: 4,
+    host_skew: false,
+    delete_prob: 0.0,
+};
+const META_CFG: Cfg = Cfg {
+    name: "meta",
+    min_m: 2,
+    max_m: 20,
+    max_exp: 30,
+    amt_max: 1_000_000,
+    equal_bias: 0.5,
+    density: 0.5,
+    settle_max: 6,
+    host_skew: false,
+    delete_prob: 0.0,
+};
+const RT_CFG: Cfg = Cfg {
+    name: "rt",
+    min_m: 2,
+    max_m: 30,
+    max_exp: 40,
+    amt_max: 500_000,
+    equal_bias: 0.5,
+    density: 0.5,
+    settle_max: 8,
+    host_skew: false,
+    delete_prob: 0.05,
+};
 
 /// Parameterized generator (the sweep version of `gen_scenario`). Mirrors the
 /// `add_expense` handler: equal splits go through `equal_shares(total, subset)`,
@@ -505,7 +718,12 @@ fn gen_scenario_cfg(seed: u64, cfg: &Cfg) -> Scenario {
                 .collect();
             (Method::Exact, shares)
         };
-        expenses.push(Expense { payer, method, desc, shares });
+        expenses.push(Expense {
+            payer,
+            method,
+            desc,
+            shares,
+        });
     }
     if expenses.is_empty() {
         expenses.push(Expense {
@@ -528,7 +746,12 @@ fn gen_scenario_cfg(seed: u64, cfg: &Cfg) -> Scenario {
         settlements.push((members[a], members[b], amount));
     }
 
-    Scenario { seed, members, expenses, settlements }
+    Scenario {
+        seed,
+        members,
+        expenses,
+        settlements,
+    }
 }
 
 /// Exact minimum number of transfers to settle nonzero balances `bal`.
@@ -575,7 +798,11 @@ fn min_transfers_optimal(bal: &[i64], sum: &mut [i64], dp: &mut [i32]) -> usize 
 
 /// Number of transfers greedy `simplify` produces for a raw balance vector.
 fn greedy_len(bal: &[i64]) -> usize {
-    let pairs: Vec<(i64, i64)> = bal.iter().enumerate().map(|(i, &b)| (i as i64, b)).collect();
+    let pairs: Vec<(i64, i64)> = bal
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| (i as i64, b))
+        .collect();
     simplify(&pairs).len()
 }
 
@@ -625,7 +852,11 @@ fn gen_expense_into(
 ) {
     let n = members.len();
     let payer = members[rng.random_range(0..n)];
-    let mut subset: Vec<i64> = members.iter().copied().filter(|_| rng.random_bool(0.6)).collect();
+    let mut subset: Vec<i64> = members
+        .iter()
+        .copied()
+        .filter(|_| rng.random_bool(0.6))
+        .collect();
     if subset.is_empty() {
         subset.push(members[rng.random_range(0..n)]);
     }
@@ -652,7 +883,12 @@ fn gen_expense_into(
 /// #1 Config-sweep fuzz: the full invariant check across every constellation.
 fn exp_fuzz(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
     #[derive(Default)]
-    struct S { count: u64, max_m: usize, max_e: usize, max_t: usize }
+    struct S {
+        count: u64,
+        max_m: usize,
+        max_e: usize,
+        max_t: usize,
+    }
     let parts: Vec<S> = std::thread::scope(|sc| {
         (0..threads)
             .map(|t| {
@@ -679,7 +915,14 @@ fn exp_fuzz(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
     });
     let count: u64 = parts.iter().map(|p| p.count).sum();
     vec![
-        format!("configs swept: {}", CONFIGS.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")),
+        format!(
+            "configs swept: {}",
+            CONFIGS
+                .iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         format!("{count} scenarios checked — every invariant held"),
         format!(
             "largest {} members / {} expenses; most transfers {}",
@@ -693,7 +936,16 @@ fn exp_fuzz(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
 /// #6 Optimality oracle: greedy `simplify` vs the exact minimum.
 fn exp_oracle(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
     #[derive(Default, Clone)]
-    struct S { count: u64, sub: u64, sum_ex: u64, max_ex: usize, w_seed: u64, w_g: usize, w_o: usize, skip: u64 }
+    struct S {
+        count: u64,
+        sub: u64,
+        sum_ex: u64,
+        max_ex: usize,
+        w_seed: u64,
+        w_g: usize,
+        w_o: usize,
+        skip: u64,
+    }
     let parts: Vec<S> = std::thread::scope(|sc| {
         (0..threads)
             .map(|t| {
@@ -705,7 +957,8 @@ fn exp_oracle(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
                     while Instant::now() < deadline {
                         let s = gen_scenario_cfg(seed, &ORACLE_CFG);
                         let bal = s.balances();
-                        let nz: Vec<i64> = bal.iter().map(|(_, b)| *b).filter(|&b| b != 0).collect();
+                        let nz: Vec<i64> =
+                            bal.iter().map(|(_, b)| *b).filter(|&b| b != 0).collect();
                         if nz.len() > 12 {
                             st.skip += 1;
                             seed = seed.wrapping_add(threads as u64);
@@ -716,7 +969,8 @@ fn exp_oracle(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
                         assert!(
                             greedy >= opt,
                             "greedy {greedy} < optimal {opt} at seed={} — ORACLE/GREEDY BUG\n{:#?}",
-                            s.seed, s
+                            s.seed,
+                            s
                         );
                         st.count += 1;
                         if greedy > opt {
@@ -744,15 +998,33 @@ fn exp_oracle(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
     let sub: u64 = parts.iter().map(|p| p.sub).sum();
     let sum_ex: u64 = parts.iter().map(|p| p.sum_ex).sum();
     let skip: u64 = parts.iter().map(|p| p.skip).sum();
-    let worst = parts.iter().max_by_key(|p| p.max_ex).cloned().unwrap_or_default();
-    let matched = if count > 0 { 100.0 * (count - sub) as f64 / count as f64 } else { 0.0 };
-    let avg_ex = if sub > 0 { sum_ex as f64 / sub as f64 } else { 0.0 };
+    let worst = parts
+        .iter()
+        .max_by_key(|p| p.max_ex)
+        .cloned()
+        .unwrap_or_default();
+    let matched = if count > 0 {
+        100.0 * (count - sub) as f64 / count as f64
+    } else {
+        0.0
+    };
+    let avg_ex = if sub > 0 {
+        sum_ex as f64 / sub as f64
+    } else {
+        0.0
+    };
     vec![
         format!("{count} scenarios compared to the exact optimum (greedy >= optimum always held)"),
         format!("greedy hit the optimum in {matched:.3}% of cases ({sub} suboptimal)"),
-        format!("when suboptimal: +{avg_ex:.2} extra transfers on average, +{} at most", worst.max_ex),
+        format!(
+            "when suboptimal: +{avg_ex:.2} extra transfers on average, +{} at most",
+            worst.max_ex
+        ),
         if worst.max_ex > 0 {
-            format!("worst case: greedy {} vs optimal {} (replay seed {})", worst.w_g, worst.w_o, worst.w_seed)
+            format!(
+                "worst case: greedy {} vs optimal {} (replay seed {})",
+                worst.w_g, worst.w_o, worst.w_seed
+            )
         } else {
             "greedy never beat the optimum by more than 0".into()
         },
@@ -763,13 +1035,22 @@ fn exp_oracle(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
 /// #7 Adversarial search: hill-climb balance vectors to maximise greedy's gap.
 fn exp_adversarial(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
     #[derive(Default, Clone)]
-    struct S { restarts: u64, evals: u64, best: usize, g: usize, o: usize, vec: Vec<i64> }
+    struct S {
+        restarts: u64,
+        evals: u64,
+        best: usize,
+        g: usize,
+        o: usize,
+        vec: Vec<i64>,
+    }
     let parts: Vec<S> = std::thread::scope(|sc| {
         (0..threads)
             .map(|t| {
                 sc.spawn(move || {
                     let mut st = S::default();
-                    let mut rng = StdRng::seed_from_u64(base ^ (t as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                    let mut rng = StdRng::seed_from_u64(
+                        base ^ (t as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                    );
                     let mut sbuf = vec![0i64; 4096];
                     let mut dbuf = vec![0i32; 4096];
                     let gap = |v: &[i64], sb: &mut [i64], db: &mut [i32]| -> usize {
@@ -822,11 +1103,18 @@ fn exp_adversarial(deadline: Instant, threads: usize, base: u64) -> Vec<String> 
     });
     let evals: u64 = parts.iter().map(|p| p.evals).sum();
     let restarts: u64 = parts.iter().map(|p| p.restarts).sum();
-    let best = parts.iter().max_by_key(|p| p.best).cloned().unwrap_or_default();
+    let best = parts
+        .iter()
+        .max_by_key(|p| p.best)
+        .cloned()
+        .unwrap_or_default();
     vec![
         format!("{restarts} restarts, {evals} candidate balance-vectors evaluated"),
         if best.best > 0 {
-            format!("worst gap found: greedy {} vs optimal {} (+{}) for balances {:?}", best.g, best.o, best.best, best.vec)
+            format!(
+                "worst gap found: greedy {} vs optimal {} (+{}) for balances {:?}",
+                best.g, best.o, best.best, best.vec
+            )
         } else {
             "greedy stayed optimal on every vector tried".into()
         },
@@ -876,18 +1164,32 @@ fn metamorphic_check(seed: u64) {
     shuffle(&mut p, &mut rng);
     shuffle(&mut q, &mut rng);
     shuffle(&mut e, &mut rng);
-    assert_eq!(net_balances(members, &p, &q, &e), base, "order-dependent! {}", ctx());
+    assert_eq!(
+        net_balances(members, &p, &q, &e),
+        base,
+        "order-dependent! {}",
+        ctx()
+    );
 
     // (2) Scaling by k must scale balances by k (bounded to stay under i64::MAX).
     let maxb = base.iter().map(|(_, b)| b.abs()).max().unwrap_or(0);
-    let kmax = if maxb == 0 { 1000 } else { (i64::MAX / (maxb + 1)).min(1000) };
+    let kmax = if maxb == 0 {
+        1000
+    } else {
+        (i64::MAX / (maxb + 1)).min(1000)
+    };
     if kmax >= 2 {
         let k = rng.random_range(2..=kmax);
         let p: Vec<_> = pay.iter().map(|&(m, a)| (m, a * k)).collect();
         let q: Vec<_> = sh.iter().map(|&(m, a)| (m, a * k)).collect();
         let e: Vec<_> = set.iter().map(|&(f, t, a)| (f, t, a * k)).collect();
         let expect: Vec<_> = base.iter().map(|&(m, b)| (m, b * k)).collect();
-        assert_eq!(net_balances(members, &p, &q, &e), expect, "not linear (k={k}) {}", ctx());
+        assert_eq!(
+            net_balances(members, &p, &q, &e),
+            expect,
+            "not linear (k={k}) {}",
+            ctx()
+        );
     }
 
     // (3) A self-paid expense changes nothing.
@@ -896,7 +1198,12 @@ fn metamorphic_check(seed: u64) {
     let (mut p, mut q) = (pay.clone(), sh.clone());
     p.push((pid, x));
     q.push((pid, x));
-    assert_eq!(net_balances(members, &p, &q, &set), base, "self-paid expense moved money {}", ctx());
+    assert_eq!(
+        net_balances(members, &p, &q, &set),
+        base,
+        "self-paid expense moved money {}",
+        ctx()
+    );
 
     // (4) A settlement and its reverse cancel.
     let a = members[rng.random_range(0..members.len())];
@@ -905,7 +1212,12 @@ fn metamorphic_check(seed: u64) {
     let mut e = set.clone();
     e.push((a, b, m));
     e.push((b, a, m));
-    assert_eq!(net_balances(members, &pay, &sh, &e), base, "settlement+reverse moved money {}", ctx());
+    assert_eq!(
+        net_balances(members, &pay, &sh, &e),
+        base,
+        "settlement+reverse moved money {}",
+        ctx()
+    );
 
     // (5) Splitting one payment row and one share row in two changes nothing.
     let mut p = pay.clone();
@@ -920,7 +1232,12 @@ fn metamorphic_check(seed: u64) {
         q[i] = (m, a / 2);
         q.push((m, a - a / 2));
     }
-    assert_eq!(net_balances(members, &p, &q, &set), base, "splitting a row moved money {}", ctx());
+    assert_eq!(
+        net_balances(members, &p, &q, &set),
+        base,
+        "splitting a row moved money {}",
+        ctx()
+    );
 }
 
 /// #4 Settle round-trip: record the suggested transfers as settlements, and the
@@ -943,9 +1260,14 @@ fn exp_roundtrip(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
                         assert!(
                             after.iter().all(|&(_, b)| b == 0),
                             "settle round-trip left non-zero balances at seed={}\n{:#?}",
-                            s.seed, s
+                            s.seed,
+                            s
                         );
-                        assert!(simplify(&after).is_empty(), "residual transfers after settling at seed={}", s.seed);
+                        assert!(
+                            simplify(&after).is_empty(),
+                            "residual transfers after settling at seed={}",
+                            s.seed
+                        );
                         count += 1;
                         max_t = max_t.max(transfers.len());
                         seed = seed.wrapping_add(threads as u64);
@@ -960,20 +1282,29 @@ fn exp_roundtrip(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
     });
     let count: u64 = parts.iter().map(|p| p.0).sum();
     let max_t = parts.iter().map(|p| p.1).max().unwrap_or(0);
-    vec![format!("{count} groups settled to exactly zero (up to {max_t} transfers each), no residue")]
+    vec![format!(
+        "{count} groups settled to exactly zero (up to {max_t} transfers each), no residue"
+    )]
 }
 
 /// #8 Monthly-split lifecycle: add expenses, settle, repeat for many months —
 /// the group must be exactly square after every settle, with no öre drift.
 fn exp_lifecycle(deadline: Instant, threads: usize, base: u64) -> Vec<String> {
     #[derive(Default)]
-    struct S { groups: u64, months: u64, max_months: u64, max_ledger: usize }
+    struct S {
+        groups: u64,
+        months: u64,
+        max_months: u64,
+        max_ledger: usize,
+    }
     let parts: Vec<S> = std::thread::scope(|sc| {
         (0..threads)
             .map(|t| {
                 sc.spawn(move || {
                     let mut st = S::default();
-                    let mut rng = StdRng::seed_from_u64(base ^ (t as u64).wrapping_mul(0xD1B5_4A32_D192_ED03));
+                    let mut rng = StdRng::seed_from_u64(
+                        base ^ (t as u64).wrapping_mul(0xD1B5_4A32_D192_ED03),
+                    );
                     while Instant::now() < deadline {
                         let n = rng.random_range(2..=8usize);
                         let mut members = Vec::with_capacity(n);
@@ -1042,17 +1373,31 @@ fn overflow_probe() -> Vec<String> {
     };
     let ok_below = matches(n_break);
     let diverge_above = !matches(n_break + 1);
-    assert!(ok_below, "i64 diverged from i128 below the theoretical ceiling");
-    assert!(diverge_above, "expected i64 overflow past the ceiling was not detected");
+    assert!(
+        ok_below,
+        "i64 diverged from i128 below the theoretical ceiling"
+    );
+    assert!(
+        diverge_above,
+        "expected i64 overflow past the ceiling was not detected"
+    );
     vec![
         "── overflow / precision envelope ──".into(),
-        format!("i64 balance ceiling: {} öre = {} SEK", i64::MAX, i64::MAX / 100),
+        format!(
+            "i64 balance ceiling: {} öre = {} SEK",
+            i64::MAX,
+            i64::MAX / 100
+        ),
         format!(
             "a member can absorb {n_break} expenses of {} SEK and still compute exactly (i64 == i128): OK",
             a / 100
         ),
-        format!("the {}th such expense overflows i64, caught by the i128 oracle: confirmed", n_break + 1),
-        "real tabs top out in the millions of SEK — roughly 9 orders of magnitude of headroom.".into(),
+        format!(
+            "the {}th such expense overflows i64, caught by the i128 oracle: confirmed",
+            n_break + 1
+        ),
+        "real tabs top out in the millions of SEK — roughly 9 orders of magnitude of headroom."
+            .into(),
     ]
 }
 
@@ -1061,12 +1406,19 @@ fn overflow_probe() -> Vec<String> {
 #[ignore = "long-running soak; run explicitly, e.g. SETTLEUP_SIM_SECS=1200 cargo test --release sim_campaign -- --ignored --nocapture"]
 fn sim_campaign() {
     use std::io::Write;
-    let secs: u64 = std::env::var("SETTLEUP_SIM_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(1200);
+    let secs: u64 = std::env::var("SETTLEUP_SIM_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1200);
     let threads: usize = std::env::var("SETTLEUP_SIM_THREADS")
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|&n| n > 0)
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        });
 
     let start = Instant::now();
     println!("\n=== SettleUp simulation campaign — {secs}s budget, {threads} threads ===\n");
@@ -1078,7 +1430,8 @@ fn sim_campaign() {
     println!();
     let _ = std::io::stdout().flush();
 
-    let fillers: [(&str, u32, fn(Instant, usize, u64) -> Vec<String>); 6] = [
+    type Filler = (&'static str, u32, fn(Instant, usize, u64) -> Vec<String>);
+    let fillers: [Filler; 6] = [
         ("config-sweep fuzz", 3, exp_fuzz),
         ("optimality oracle", 3, exp_oracle),
         ("adversarial worst-case", 2, exp_adversarial),
@@ -1116,12 +1469,18 @@ fn oracle_matches_known_gap() {
     // Greedy needs 4 transfers here; the optimum is 3 ({4,-1,-3} and {3,-3}).
     let bal = [4i64, 3, -1, -3, -3];
     assert_eq!(min_transfers_optimal(&bal, &mut sum, &mut dp), 3);
-    assert_eq!(simplify(&[(1, 4), (2, 3), (3, -1), (4, -3), (5, -3)]).len(), 4);
+    assert_eq!(
+        simplify(&[(1, 4), (2, 3), (3, -1), (4, -3), (5, -3)]).len(),
+        4
+    );
 
     assert_eq!(min_transfers_optimal(&[], &mut sum, &mut dp), 0);
     assert_eq!(min_transfers_optimal(&[5, -5], &mut sum, &mut dp), 1);
     assert_eq!(min_transfers_optimal(&[2, 2, -2, -2], &mut sum, &mut dp), 2);
-    assert_eq!(min_transfers_optimal(&[3, -1, -1, -1], &mut sum, &mut dp), 3);
+    assert_eq!(
+        min_transfers_optimal(&[3, -1, -1, -1], &mut sum, &mut dp),
+        3
+    );
 
     // Greedy must never beat the optimum on random small scenarios.
     let mut rng = StdRng::seed_from_u64(0x0071_9A2C_u64);
@@ -1145,28 +1504,51 @@ async fn soft_deleted_expense_leaves_no_trace_in_balances() {
 
     let pool = db::memory_pool().await;
 
-    sqlx::query("INSERT INTO groups (id, name) VALUES ('g', 'G')").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO groups (id, name) VALUES ('g', 'G')")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES ('g','Alice','a'), ('g','Bob','b')")
         .execute(&pool).await.unwrap();
-    let ids: Vec<i64> = sqlx::query_as::<_, (i64,)>("SELECT id FROM members WHERE group_id='g' ORDER BY id")
-        .fetch_all(&pool).await.unwrap().into_iter().map(|(x,)| x).collect();
+    let ids: Vec<i64> =
+        sqlx::query_as::<_, (i64,)>("SELECT id FROM members WHERE group_id='g' ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(x,)| x)
+            .collect();
     let (alice, bob) = (ids[0], ids[1]);
 
     // Alice fronts 100, split 50/50.
     let eid: i64 = sqlx::query_scalar(
         "INSERT INTO expenses (group_id, payer_id, amount, description) VALUES ('g', ?, 100, 'round') RETURNING id",
     ).bind(alice).fetch_one(&pool).await.unwrap();
-    sqlx::query("INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?,?,50),(?,?,50)")
-        .bind(eid).bind(alice).bind(eid).bind(bob).execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?,?,50),(?,?,50)",
+    )
+    .bind(eid)
+    .bind(alice)
+    .bind(eid)
+    .bind(bob)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let members = vec![alice, bob];
     let pay = db::expense_payments(&pool, "g").await.unwrap();
     let sh = db::expense_share_rows(&pool, "g").await.unwrap();
     let set = db::settlement_rows(&pool, "g").await.unwrap();
-    assert_eq!(settle::net_balances(&members, &pay, &sh, &set), vec![(alice, 50), (bob, -50)]);
+    assert_eq!(
+        settle::net_balances(&members, &pay, &sh, &set),
+        vec![(alice, 50), (bob, -50)]
+    );
 
     sqlx::query("UPDATE expenses SET deleted_at = datetime('now') WHERE id = ?")
-        .bind(eid).execute(&pool).await.unwrap();
+        .bind(eid)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let pay = db::expense_payments(&pool, "g").await.unwrap();
     let sh = db::expense_share_rows(&pool, "g").await.unwrap();
