@@ -883,6 +883,42 @@ mod tests {
         assert_eq!(expense_count(&pool, &gid).await, 0, "a closed group must not accept new expenses");
     }
 
+    // --- Add-expense screen (GET /g/{id}/add) -------------------------------------
+
+    #[tokio::test]
+    async fn add_expense_page_renders_the_form_for_a_member() {
+        let pool = db::memory_pool().await;
+        let (gid, [_alice, bob, cara], token) = group_with_three(&pool).await;
+        let resp = add_expense_page(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token))
+            .await.map_err(|_| "member should see the form").unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let out = body_string(resp).await;
+        assert!(out.contains("New expense"), "the focused screen has its heading");
+        assert!(out.contains(&format!(r#"action="/g/{gid}/expenses""#)), "posts to the expense endpoint");
+        // Every member is a selectable participant on this screen.
+        assert!(out.contains(&format!(r#"name="inc_{bob}""#)) && out.contains(&format!(r#"name="inc_{cara}""#)));
+    }
+
+    #[tokio::test]
+    async fn add_expense_page_forbidden_for_non_member() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, _token) = group_with_three(&pool).await;
+        let res = add_expense_page(State(state(pool.clone())), Path(gid.clone()), CookieJar::new()).await;
+        assert!(res.is_err(), "a non-member must not reach the add-expense screen");
+    }
+
+    #[tokio::test]
+    async fn add_expense_page_redirects_when_closed() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
+            .bind(&gid).execute(&pool).await.unwrap();
+        let resp = add_expense_page(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token))
+            .await.map_err(|_| "closed group should redirect, not error").unwrap();
+        assert!(resp.status().is_redirection(), "a closed group bounces back to the group page");
+        assert_eq!(resp.headers().get("location").unwrap(), &format!("/g/{gid}"));
+    }
+
     // --- Live-update poll ---------------------------------------------------------
 
     async fn body_string(resp: Response) -> String {
