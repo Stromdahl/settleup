@@ -2,11 +2,11 @@
 //! (loaded from CDN, with `hx-boost`) is a progressive enhancement, so the app is
 //! fully functional even if the script never loads.
 //!
-//! Visual direction ("SettleUp Redesign", Sensative design system): a near-black teal
-//! canvas with mustard actions, avatar chips, and a glowing gradient "Settle up" hero.
-//! The colours below mirror the design system's *dark* theme tokens. Fonts fall back to
-//! the system stack (the DS ships a custom "Texta Alt" face, but the app deliberately has
-//! no static-asset pipeline, so we stay self-contained / CSP-friendly).
+//! Visual direction ("SettleUp Redesign — Dark · blue", Sensative design system): a
+//! near-black slate canvas with blue actions, avatar chips, and a glowing blue-gradient
+//! "Settle up" hero — the one thing that glows. Green/red carry balance sign only. Fonts
+//! fall back to the system stack (the DS ships a custom "Texta Alt" face, but the app
+//! deliberately has no static-asset pipeline, so we stay self-contained / CSP-friendly).
 
 use crate::money::format_amount;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
@@ -14,14 +14,13 @@ use maud::{DOCTYPE, Markup, PreEscaped, html};
 const STYLES: &str = r#"
 :root{
   color-scheme:dark;
-  --bg:#0B1F22; --bg-soft:#0F2A2D;
-  --surface:#103035; --surface-2:#0C2529; --surface-3:#163B40;
-  --border:#234C52; --border-strong:#2C6068;
-  --fg:#EAF2F1; --muted:#A6BFBF; --soft:#7C9999;
-  --primary:#6EABAE; --primary-2:#8FBCBE; --teal:#01676C; --teal-deep:#014B4F;
-  --accent:#D7B26D; --accent-ink:#014B4F; --gold:#EBC98F;
-  --note-bg:#2A2410; --note-border:#4A3E18; --note-fg:#EAD9AE; --note-muted:#B7A87F;
-  --ok:#5CC58A; --ok-border:#1F8A5B; --ok-bg:#0F2A2D; --alarm:#E07A6F;
+  --bg:#0b0c11; --bg-soft:#111219;
+  --surface:#15171f; --surface-2:#0f1016; --surface-3:#1b1e29;
+  --border:#262a36; --border-strong:#333a4a;
+  --fg:#e9ebf2; --muted:#9ea4b3; --soft:#6f7687;
+  --primary:#3f6fe5; --primary-2:#6b8afd; --primary-ink:#ffffff; --settle-amt:#a9c2ff;
+  --note-bg:#141824; --note-border:#2b3450; --note-fg:#c3cdec; --note-muted:#8b93a8;
+  --ok:#5CC58A; --ok-border:#1F8A5B; --ok-bg:#0f1a16; --alarm:#E07A6F;
   --r:16px; --r-lg:22px; --pill:999px;
   --font:"Texta Alt",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
 }
@@ -29,7 +28,7 @@ const STYLES: &str = r#"
 html,body{margin:0;}
 body{font-family:var(--font);font-weight:400;font-size:16px;line-height:1.45;
   color:var(--fg);background:var(--bg);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
-::selection{background:rgba(110,171,174,.3);}
+::selection{background:rgba(63,111,229,.3);}
 strong,b{font-weight:800;}
 a{color:inherit;text-decoration:none;}
 
@@ -37,7 +36,7 @@ a{color:inherit;text-decoration:none;}
 .wrap.has-fab{padding-bottom:130px;}
 
 /* ---- type ---- */
-.eyebrow{font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--primary);margin:0;}
+.eyebrow{font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--primary-2);margin:0;}
 .eyebrow.soft{color:var(--soft);}
 h1,.title{font-size:34px;font-weight:800;letter-spacing:-.02em;line-height:1.05;margin:0;}
 .gtitle{font-size:28px;font-weight:800;letter-spacing:-.02em;line-height:1.05;margin:3px 0 0;}
@@ -64,9 +63,9 @@ input[type=text],input[type=number],input[type=password],select{
   width:100%;box-sizing:border-box;padding:13px 14px;border:1px solid var(--border-strong);
   border-radius:12px;background:var(--surface-2);color:var(--fg);font-family:inherit;font-weight:800;font-size:17px;}
 input::placeholder{color:var(--soft);font-weight:800;}
-input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(110,171,174,.25);}
+input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(63,111,229,.3);}
 select{appearance:none;-webkit-appearance:none;padding-right:40px;background-repeat:no-repeat;background-position:right 14px center;
-  background-image:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='18'%20height='18'%20fill='none'%20stroke='%237C9999'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='m6%209%206%206%206-6'/%3E%3C/svg%3E");}
+  background-image:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='18'%20height='18'%20fill='none'%20stroke='%236f7687'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='m6%209%206%206%206-6'/%3E%3C/svg%3E");}
 .amount-big{font-size:26px;text-align:center;padding:16px;}
 
 /* ---- buttons ---- */
@@ -74,12 +73,12 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
   font-family:inherit;font-weight:800;font-size:18px;padding:16px 18px;border-radius:14px;
   background:var(--surface-3);color:var(--fg);text-decoration:none;line-height:1;}
 .btn svg{width:20px;height:20px;stroke-width:2.2;}
-.btn.primary{background:var(--accent);color:var(--accent-ink);}
+.btn.primary{background:var(--primary);color:var(--primary-ink);}
 .btn.primary svg{stroke-width:2.4;}
 .btn.block{width:100%;}
 .btn.ghost{background:var(--surface-2);border:1px solid var(--border-strong);color:var(--fg);}
 .btn.sm{font-size:15px;padding:11px 16px;border-radius:12px;}
-.btn:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(110,171,174,.45);}
+.btn:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(63,111,229,.5);}
 
 /* ---- avatars ---- */
 .avatar{width:32px;height:32px;border-radius:999px;display:inline-flex;align-items:center;
@@ -90,7 +89,7 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 .stack .avatar{border:2px solid var(--surface);}
 .stack .avatar + .avatar{margin-left:-10px;}
 .mini-badge{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;
-  color:var(--accent);border:1px solid var(--note-border);padding:1px 6px;border-radius:999px;margin-left:6px;}
+  color:var(--primary-2);border:1px solid var(--border-strong);padding:1px 6px;border-radius:999px;margin-left:6px;}
 
 /* ---- group header ---- */
 .ghead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:0 4px;}
@@ -102,9 +101,9 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 
 /* ---- settle-up hero ---- */
 .settle{margin-top:18px;border-radius:22px;padding:20px;color:#fff;
-  background:linear-gradient(155deg,#014B4F 0%,#017E85 100%);box-shadow:0 20px 46px -18px rgba(1,110,115,.7);}
+  background:linear-gradient(155deg,#1c2a63 0%,#2f5fd6 100%);box-shadow:0 20px 46px -18px rgba(63,111,229,.55);}
 .settle-top{display:flex;align-items:center;justify-content:space-between;}
-.settle-top .eyebrow{color:var(--accent);}
+.settle-top .eyebrow{color:var(--settle-amt);}
 .settle-count{font-size:12px;font-weight:800;color:rgba(255,255,255,.7);}
 .settle-head{font-size:22px;font-weight:800;letter-spacing:-.01em;line-height:1.2;margin-top:6px;}
 .xfers{display:flex;flex-direction:column;gap:10px;margin-top:16px;}
@@ -113,9 +112,9 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 .xfer .pair svg{width:16px;height:16px;stroke-width:2.2;}
 .xfer .who{flex:1;min-width:0;}
 .xfer .who .names{font-size:14px;color:rgba(255,255,255,.75);}
-.xfer .who .amt{font-size:19px;font-weight:800;color:var(--gold);line-height:1.1;}
+.xfer .who .amt{font-size:19px;font-weight:800;color:var(--settle-amt);line-height:1.1;}
 .xfer .who .amt .cur{font-size:12px;color:rgba(255,255,255,.6);}
-.mark{display:inline-flex;align-items:center;gap:6px;background:var(--accent);color:var(--accent-ink);
+.mark{display:inline-flex;align-items:center;gap:6px;background:var(--primary);color:var(--primary-ink);
   border:0;border-radius:999px;font-family:inherit;font-weight:800;font-size:14px;padding:10px 14px;
   white-space:nowrap;cursor:pointer;}
 .mark svg{width:15px;height:15px;stroke-width:2.6;}
@@ -123,7 +122,7 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 /* ---- settled / empty states ---- */
 .state{margin-top:18px;border-radius:22px;padding:28px 20px;text-align:center;background:var(--ok-bg);border:1px solid var(--ok-border);}
 .state .disc{width:64px;height:64px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;
-  background:var(--ok);color:#04262A;box-shadow:0 10px 26px -8px rgba(92,197,138,.6);}
+  background:var(--ok);color:#ffffff;box-shadow:0 10px 26px -8px rgba(92,197,138,.6);}
 .state .disc svg{width:34px;height:34px;stroke-width:2.8;}
 .state .state-title{font-size:24px;font-weight:800;letter-spacing:-.01em;margin-top:14px;}
 .state .state-sub{font-size:15px;color:var(--muted);margin-top:6px;line-height:1.45;}
@@ -165,7 +164,7 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 .linkrow .lk{flex:1;min-width:0;}
 .linkrow .lk .k{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--soft);}
 .linkrow .lk .u{font-size:14px;font-weight:800;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.copy{display:inline-flex;align-items:center;gap:6px;background:var(--primary);color:#04262A;border:0;border-radius:10px;
+.copy{display:inline-flex;align-items:center;gap:6px;background:var(--primary);color:var(--primary-ink);border:0;border-radius:10px;
   font-family:inherit;font-size:14px;font-weight:800;padding:9px 14px;white-space:nowrap;cursor:pointer;flex:none;}
 .copy svg{width:15px;height:15px;stroke-width:2;}
 
@@ -173,8 +172,8 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 .seg{display:flex;gap:4px;background:var(--surface-2);border-radius:12px;padding:4px;}
 .seg input{position:absolute;opacity:0;pointer-events:none;}
 .seg label{flex:1;text-align:center;padding:10px;border-radius:9px;font-size:15px;font-weight:800;color:var(--muted);cursor:pointer;}
-.seg input:checked + label{background:var(--teal);color:#fff;}
-.seg label:focus-within{box-shadow:0 0 0 3px rgba(110,171,174,.4);}
+.seg input:checked + label{background:var(--primary);color:#fff;}
+.seg label:focus-within{box-shadow:0 0 0 3px rgba(63,111,229,.45);}
 
 /* ---- share list (custom checkbox) ---- */
 .share-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border);}
@@ -183,15 +182,15 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
   background:var(--surface-2);position:relative;cursor:pointer;flex:none;margin:0;}
 .chk:checked{background:var(--primary);border-color:var(--primary);}
 .chk:checked::after{content:"";position:absolute;left:7px;top:3px;width:6px;height:11px;
-  border:solid #04262A;border-width:0 3px 3px 0;transform:rotate(45deg);}
-.chk:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(110,171,174,.4);}
+  border:solid #ffffff;border-width:0 3px 3px 0;transform:rotate(45deg);}
+.chk:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(63,111,229,.45);}
 .share-row input[type=text]{width:96px;flex:none;padding:9px 10px;font-size:15px;text-align:right;border-radius:10px;}
 .share-hint{font-size:13px;color:var(--soft);margin:-2px 0 10px;}
 
 /* ---- note / owner card ---- */
 .note{border-radius:16px;padding:14px 16px;background:var(--note-bg);border:1px solid var(--note-border);}
 .note-head{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:800;color:var(--note-fg);}
-.note-head svg{width:17px;height:17px;color:var(--accent);stroke-width:1.8;flex:none;}
+.note-head svg{width:17px;height:17px;color:var(--primary);stroke-width:1.8;flex:none;}
 .note-body{font-size:13px;color:var(--note-muted);margin-top:6px;line-height:1.45;}
 .note input[type=password]{margin-top:12px;}
 .row-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;}
@@ -199,7 +198,7 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 
 /* ---- landing ---- */
 .brand{display:flex;flex-direction:column;align-items:flex-start;gap:20px;}
-.logo{color:var(--primary);display:inline-flex;}
+.logo{color:var(--primary-2);display:inline-flex;}
 .brand .title{font-size:34px;}
 .foot{text-align:center;font-size:13px;color:var(--soft);margin-top:14px;line-height:1.5;}
 
@@ -216,13 +215,13 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 .fabbar{position:fixed;left:0;right:0;bottom:0;padding:14px 16px calc(18px + env(safe-area-inset-bottom,0px));
   background:linear-gradient(0deg,var(--bg) 62%,rgba(11,31,34,0));z-index:20;}
 .fabbar-inner{max-width:600px;margin:0 auto;}
-.fabbar .btn{box-shadow:0 12px 30px -10px rgba(215,178,109,.5);}
+.fabbar .btn{box-shadow:0 12px 30px -10px rgba(63,111,229,.42);}
 
 /* ---- live-update "someone joined" banner ---- */
 .joinbar{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:12px 14px;
   border-radius:14px;background:var(--surface-3);border:1px solid var(--border-strong);}
 .joinbar .jb-text{flex:1;font-weight:800;font-size:15px;min-width:0;}
-.joinbar .jb-refresh{font-weight:800;font-size:14px;color:var(--gold);white-space:nowrap;}
+.joinbar .jb-refresh{font-weight:800;font-size:14px;color:var(--primary-2);white-space:nowrap;}
 .joinbar .jb-x{background:none;border:0;color:var(--soft);font-size:22px;line-height:1;
   padding:0 2px;cursor:pointer;font-family:inherit;}
 "#;
@@ -253,12 +252,12 @@ fn icon(paths: &str, size: u32) -> Markup {
 /// the design-system palette. Mustard is reserved for actions, so it's not used here.
 fn avatar_colors(id: i64) -> (&'static str, &'static str) {
     const PALETTE: &[(&str, &str)] = &[
-        ("#01676C", "#ffffff"), // teal
+        ("#3f6fe5", "#ffffff"), // blue (matches the primary action)
         ("#698FB2", "#ffffff"), // silver lake
         ("#B8818B", "#ffffff"), // lavender
-        ("#6EABAE", "#04262A"), // teal medium
-        ("#BEAE8F", "#22221E"), // beige
-        ("#083054", "#ffffff"), // prussian
+        ("#5AA98F", "#ffffff"), // muted teal-green
+        ("#8C7CC0", "#ffffff"), // periwinkle
+        ("#C0876B", "#ffffff"), // warm clay
     ];
     PALETTE[(id.rem_euclid(PALETTE.len() as i64)) as usize]
 }
@@ -322,7 +321,7 @@ fn layout(title: &str, wrap_extra: &str, body: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                meta name="theme-color" content="#0B1F22";
+                meta name="theme-color" content="#0b0c11";
                 title { (title) }
                 style { (PreEscaped(STYLES)) }
                 script src="https://unpkg.com/htmx.org@2.0.4" defer {}
