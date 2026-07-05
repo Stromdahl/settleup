@@ -70,6 +70,8 @@ Licensed under the GNU General Public License v3.0 (`GPL-3.0-only`). See
 
 - No in-place expense editing (delete + re-add).
 - No CSRF tokens (mitigated by `SameSite=Lax` cookies); add tokens if hardening.
-- htmx is loaded from a CDN as a progressive enhancement; the app works without it.
-  Vendor it if you need a strict Content-Security-Policy or offline use.
+- No Content-Security-Policy yet: the app uses inline `<style>`/`<script>`, so a strict
+  CSP needs `'unsafe-inline'` or nonces first. (htmx is now vendored and self-served —
+  `assets/htmx-2.0.4.min.js`, embedded in the binary — so there's no third-party script
+  origin to allow; it remains a progressive enhancement and the app works without it.)
 - Single currency per group; no multi-currency, itemized splits, or notifications.

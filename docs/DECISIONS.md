@@ -227,6 +227,36 @@ read-only invariant holds.
 
 ---
 
+## 12. htmx is vendored and self-served, not loaded from a CDN
+
+**Decision:** The htmx runtime is **checked into the repo** at `assets/htmx-2.0.4.min.js`,
+compiled into the binary with `include_str!`, and served from our own origin at
+`GET /assets/htmx-2.0.4.min.js` (`Content-Type: text/javascript`, `Cache-Control: public,
+max-age=31536000, immutable`). The layout's `<script>` points there instead of at
+`unpkg.com`. The version is pinned **in the URL**, so bumping htmx changes the path and
+busts client caches for free — which is what makes the year-long `immutable` cache safe.
+
+**Why:** A CDN `<script>` is a third-party runtime dependency on every page: it can be
+slow, blocked, or unavailable, and it forecloses a strict Content-Security-Policy (you'd
+have to allow an external script origin). Self-serving removes the external dependency
+(the app works offline / on a locked-down network), keeps the single-binary deploy story
+intact — the asset ships *inside* the binary, so there's no static-file volume or extra
+Docker `COPY` — and mirrors how the app already embeds its CSS, inline JS, and logo as
+compiled-in constants (#3). Retires the "vendor it if you need a strict CSP or offline
+use" caveat from the README's v1 limitations.
+
+**Consequence:** Upgrading htmx is a three-touch change — drop the new file in `assets/`,
+update the route path, update the `<script src>` — kept in sync by the version living in
+the filename. A strict CSP is now unblocked but **not yet added**: the app still relies on
+inline `<style>`/`<script>` and inline SVG, so a real CSP needs `'unsafe-inline'` or
+nonces first. htmx remains a progressive enhancement per #3; the app is fully functional
+if the script never loads. Integrity of the vendored file was confirmed byte-identical
+across unpkg and jsdelivr (sha256 `e209dda5…fb447`).
+
+**Captured on 2026-07-05.**
+
+---
+
 ## Explicitly out of scope for v1
 
 Real accounts · itemized / percentage splits · multiple payers per expense · multi-currency
