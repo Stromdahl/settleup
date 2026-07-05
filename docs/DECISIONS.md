@@ -198,6 +198,33 @@ one-script / no-build / small-download properties htmx was chosen for in decisio
 
 **Captured from the live-updates grill on 2026-07-05.**
 
+## 11. Add-expense is its own screen; the group page is read-only
+
+**Decision:** "Add expense" is a **dedicated page** at `GET /g/{id}/add` (frame 04 of the
+redesign) rather than a form embedded in the group page. The sticky button on the group
+page navigates there; the form still posts to the existing `POST /g/{id}/expenses` and
+redirects back on success. The group page itself is now **entirely read-only** — settle-up
+hero, balances, expense/payment logs, invite, owner controls — with no input beyond the
+owner's recovery/close controls.
+
+**Why:** The design draws add-expense as a focused, full-screen task (big Total display,
+one thing at a time), which is the right shape for filling it at a bar table. Making it a
+route also **simplifies decision #10**: the live poller's careful "never swap the
+add-expense form" carve-out becomes trivially safe because the group page holds no
+in-progress input to clobber — every region there is fair game for an out-of-band swap.
+The `frag_*` / `live_update` split is unchanged; the form simply no longer lives among the
+swappable regions.
+
+**Consequence:** Adding an expense is one navigation away instead of an in-page scroll, and
+(under htmx `hx-boost`) it's an AJAX body swap; without JS it's an ordinary page load —
+both work, consistent with #3. The "Who paid?" control stays a native `<select>` (name +
+chevron) rather than the mockup's avatar-decorated custom dropdown: the avatar can't track
+the selection without JS, and a native select keeps the screen accessible and scalable to
+large rosters. A closed group renders no button and the route redirects back, so the
+read-only invariant holds.
+
+**Captured while implementing the "Dark · blue" redesign on 2026-07-05.**
+
 ---
 
 ## Explicitly out of scope for v1
