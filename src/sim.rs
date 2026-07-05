@@ -1143,9 +1143,7 @@ fn oracle_matches_known_gap() {
 async fn soft_deleted_expense_leaves_no_trace_in_balances() {
     use crate::{db, settle};
 
-    let path = std::env::temp_dir().join(format!("settleup_softdelete_{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let pool = db::connect(path.to_str().unwrap()).await.unwrap();
+    let pool = db::memory_pool().await;
 
     sqlx::query("INSERT INTO groups (id, name) VALUES ('g', 'G')").execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES ('g','Alice','a'), ('g','Bob','b')")
@@ -1178,7 +1176,4 @@ async fn soft_deleted_expense_leaves_no_trace_in_balances() {
         vec![(alice, 0), (bob, 0)],
         "soft-deleted expense still affects balances — its shares aren't excluded by the JOIN"
     );
-
-    drop(pool);
-    let _ = std::fs::remove_file(&path);
 }

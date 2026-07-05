@@ -606,3 +606,151 @@ pub async fn recover_submit(
     let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
     Ok((jar, Redirect::to(&format!("/g/{gid}"))).into_response())
 }
+
+#[cfg(test)]
+mod tests {
+    //! End-to-end tests that drive `add_expense` against a real (in-memory) DB.
+    //! The simulation campaign validates the settle math the handler *feeds*; these
+    //! close the loop by checking the handler actually parses, computes, validates,
+    //! and persists the right rows — that `amount` equals the sum of shares, that
+    //! equal/exact splits store what they should, and that bad input persists nothing.
+    use super::*;
+    use axum_extra::extract::cookie::Cookie;
+
+    /// A group with Alice (owner, authenticated via the returned token), Bob, Cara.
+    async fn group_with_three(pool: &SqlitePool) -> (String, [i64; 3], String) {
+        let gid = "g".to_string();
+        let token = "alice-device-token".to_string();
+        sqlx::query("INSERT INTO groups (id, name) VALUES (?, 'Trip')")
+            .bind(&gid).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, 'Alice', ?, 1)")
+            .bind(&gid).bind(ids::hash_token(&token)).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES (?, 'Bob', 'hb')")
+            .bind(&gid).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO members (group_id, name, token_hash) VALUES (?, 'Cara', 'hc')")
+            .bind(&gid).execute(pool).await.unwrap();
+        let ids: Vec<i64> = sqlx::query_as::<_, (i64,)>(
+            "SELECT id FROM members WHERE group_id = ? ORDER BY id",
+        )
+        .bind(&gid).fetch_all(pool).await.unwrap()
+        .into_iter().map(|(x,)| x).collect();
+        (gid, [ids[0], ids[1], ids[2]], token)
+    }
+
+    fn state(pool: SqlitePool) -> AppState {
+        AppState { pool, base_url: None, secure_cookies: false }
+    }
+
+    fn auth_jar(gid: &str, token: &str) -> CookieJar {
+        CookieJar::new().add(Cookie::new(ids::cookie_name(gid), token.to_string()))
+    }
+
+    /// `(stored amount, sorted shares)` for the group's one live expense.
+    async fn persisted(pool: &SqlitePool, gid: &str) -> (i64, Vec<(i64, i64)>) {
+        let amount: i64 = sqlx::query_scalar(
+            "SELECT amount FROM expenses WHERE group_id = ? AND deleted_at IS NULL",
+        )
+        .bind(gid).fetch_one(pool).await.unwrap();
+        let mut shares = db::expense_share_rows(pool, gid).await.unwrap();
+        shares.sort();
+        (amount, shares)
+    }
+
+    async fn expense_count(pool: &SqlitePool, gid: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM expenses WHERE group_id = ?")
+            .bind(gid).fetch_one(pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn equal_split_persists_equal_shares_and_matching_total() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+
+        // 100.00 split equally among all three.
+        let body = format!(
+            "payer_id={alice}&description=Dinner&method=equal&amount=100&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+        );
+        let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body)
+            .await.map_err(|_| "handler returned an error").unwrap();
+
+        // 10000 öre / 3 = 3334, 3333, 3333 — the leftover öre goes to the lowest id.
+        let (amount, shares) = persisted(&pool, &gid).await;
+        assert_eq!(shares, vec![(alice, 3334), (bob, 3333), (cara, 3333)]);
+        assert_eq!(amount, 10000);
+        assert_eq!(amount, shares.iter().map(|(_, a)| a).sum::<i64>(), "stored total must equal Σ shares");
+    }
+
+    #[tokio::test]
+    async fn exact_split_persists_submitted_amounts_and_conserves_money() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+
+        // Alice fronts it; Bob owes 80.00, Cara owes 40.50; Alice isn't splitting.
+        let body = format!("payer_id={alice}&description=Nachos&method=exact&amt_{bob}=80&amt_{cara}=40.50");
+        let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body)
+            .await.map_err(|_| "handler returned an error").unwrap();
+
+        let (amount, shares) = persisted(&pool, &gid).await;
+        assert_eq!(shares, vec![(bob, 8000), (cara, 4050)]);
+        assert_eq!(amount, 12050, "exact total is the sum of the entered amounts");
+
+        // Money conserves end-to-end, through the real balance queries.
+        let members = vec![alice, bob, cara];
+        let bal = settle::net_balances(
+            &members,
+            &db::expense_payments(&pool, &gid).await.unwrap(),
+            &db::expense_share_rows(&pool, &gid).await.unwrap(),
+            &db::settlement_rows(&pool, &gid).await.unwrap(),
+        );
+        assert_eq!(bal, vec![(alice, 12050), (bob, -8000), (cara, -4050)]);
+        assert_eq!(bal.iter().map(|(_, b)| b).sum::<i64>(), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_inputs_persist_nothing() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, _cara], token) = group_with_three(&pool).await;
+        let send = |body: String| {
+            let (p, g, t) = (pool.clone(), gid.clone(), token.clone());
+            async move { add_expense(State(state(p)), Path(g.clone()), auth_jar(&g, &t), body).await }
+        };
+
+        // Blank description.
+        let _ = send(format!("payer_id={alice}&description=&method=equal&amount=50&inc_{alice}=on")).await;
+        // Zero total.
+        let _ = send(format!("payer_id={alice}&description=X&method=equal&amount=0&inc_{alice}=on")).await;
+        // No participants selected.
+        let _ = send(format!("payer_id={alice}&description=X&method=equal&amount=50")).await;
+        // Exact split with only a non-positive amount.
+        let _ = send(format!("payer_id={alice}&description=X&method=exact&amt_{bob}=0")).await;
+        // Payer isn't a member of the group.
+        let _ = send(format!("payer_id=999999&description=X&method=equal&amount=50&inc_{alice}=on")).await;
+
+        assert_eq!(expense_count(&pool, &gid).await, 0, "no invalid submission should persist");
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_is_rejected_and_persists_nothing() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, _bob, _cara], _token) = group_with_three(&pool).await;
+        let body = format!("payer_id={alice}&description=X&method=equal&amount=50&inc_{alice}=on");
+        // No device cookie → Forbidden.
+        let res = add_expense(State(state(pool.clone())), Path(gid.clone()), CookieJar::new(), body).await;
+        assert!(res.is_err(), "a request with no device cookie must be rejected");
+        assert_eq!(expense_count(&pool, &gid).await, 0);
+    }
+
+    #[tokio::test]
+    async fn closed_group_rejects_new_expenses() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
+            .bind(&gid).execute(&pool).await.unwrap();
+
+        let body = format!(
+            "payer_id={alice}&description=Late&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+        );
+        let _ = add_expense(State(state(pool.clone())), Path(gid.clone()), auth_jar(&gid, &token), body).await;
+        assert_eq!(expense_count(&pool, &gid).await, 0, "a closed group must not accept new expenses");
+    }
+}

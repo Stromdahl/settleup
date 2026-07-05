@@ -225,24 +225,29 @@ pub async fn expire_stale_groups(pool: &SqlitePool, inactive_days: i64) -> Resul
     Ok(res.rows_affected())
 }
 
+/// A fresh in-memory pool with the schema applied — the shared test fixture. One
+/// connection keeps the in-memory database alive for the pool's lifetime.
+#[cfg(test)]
+pub(crate) async fn memory_pool() -> SqlitePool {
+    use std::str::FromStr;
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap();
+    sqlx::raw_sql(SCHEMA).execute(&pool).await.unwrap();
+    pool
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
-    use std::str::FromStr;
 
     async fn test_pool() -> SqlitePool {
-        // A single shared connection keeps the in-memory DB alive across queries.
-        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
-            .unwrap()
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
-            .await
-            .unwrap();
-        sqlx::raw_sql(SCHEMA).execute(&pool).await.unwrap();
-        pool
+        super::memory_pool().await
     }
 
     #[tokio::test]
