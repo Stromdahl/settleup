@@ -54,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/", get(handlers::landing).post(handlers::create_group))
         .route("/g/{id}", get(handlers::group_page))
+        .route("/g/{id}/add", get(handlers::add_expense_page))
         .route("/g/{id}/live", get(handlers::live))
         .route("/g/{id}/join", post(handlers::join_group))
         .route("/g/{id}/expenses", post(handlers::add_expense))
