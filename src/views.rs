@@ -1,6 +1,6 @@
 //! HTML rendering with maud. Everything works as plain form POST + redirect; htmx
-//! (loaded from CDN, with `hx-boost`) is a progressive enhancement, so the app is
-//! fully functional even if the script never loads.
+//! (vendored and served from our own origin, with `hx-boost`) is a progressive
+//! enhancement, so the app is fully functional even if the script never loads.
 //!
 //! Visual direction ("SettleUp Redesign — Dark · blue", Sensative design system): a
 //! near-black slate canvas with blue actions, avatar chips, and a glowing blue-gradient
@@ -341,7 +341,7 @@ fn layout(title: &str, wrap_extra: &str, body: Markup) -> Markup {
                 meta name="theme-color" content="#0b0c11";
                 title { (title) }
                 style { (PreEscaped(STYLES)) }
-                script src="https://unpkg.com/htmx.org@2.0.4" defer {}
+                script src="/assets/htmx-2.0.4.min.js" defer {}
                 script { (PreEscaped(INLINE_JS)) }
             }
             body hx-boost="true" {

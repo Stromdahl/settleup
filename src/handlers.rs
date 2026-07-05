@@ -1,7 +1,7 @@
 //! HTTP route handlers.
 
 use axum::extract::{Path, Query, State};
-use axum::http::header::HOST;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
@@ -91,6 +91,24 @@ async fn current_member(
 
 fn name_map(members: &[crate::models::Member]) -> HashMap<i64, String> {
     members.iter().map(|m| (m.id, m.name.clone())).collect()
+}
+
+// --- Static assets --------------------------------------------------------------
+
+/// Vendored htmx, compiled into the binary and served from our own origin so the app
+/// carries no third-party script dependency (works offline, and clears the path to a
+/// strict CSP). The version is pinned in the route, so the `immutable` year-long cache
+/// is safe: bumping htmx changes the URL, which busts client caches for free.
+pub async fn htmx_js() -> Response {
+    const HTMX: &str = include_str!("../assets/htmx-2.0.4.min.js");
+    (
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        HTMX,
+    )
+        .into_response()
 }
 
 // --- Landing / create -----------------------------------------------------------

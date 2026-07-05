@@ -15,8 +15,10 @@ RUN mkdir src \
  && cargo build --release --locked \
  && rm -rf src target/release/settleup target/release/deps/settleup-*
 
-# Build the real binary against the already-compiled dependency cache.
+# Build the real binary against the already-compiled dependency cache. `assets/` holds
+# the vendored htmx that `include_str!` embeds at compile time, so it must be present.
 COPY src ./src
+COPY assets ./assets
 RUN cargo build --release --locked
 
 # ---- runtime stage ------------------------------------------------------------
