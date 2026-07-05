@@ -66,7 +66,6 @@ input::placeholder{color:var(--soft);font-weight:800;}
 input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(63,111,229,.3);}
 select{appearance:none;-webkit-appearance:none;padding-right:40px;background-repeat:no-repeat;background-position:right 14px center;
   background-image:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='18'%20height='18'%20fill='none'%20stroke='%236f7687'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='m6%209%206%206%206-6'/%3E%3C/svg%3E");}
-.amount-big{font-size:26px;text-align:center;padding:16px;}
 
 /* ---- buttons ---- */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;border:0;cursor:pointer;
@@ -232,7 +231,7 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
   display:inline-flex;align-items:center;justify-content:center;color:var(--muted);}
 .closebtn svg{width:18px;height:18px;stroke-width:2.2;}
 .total-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px;text-align:center;}
-.total-card .k{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--soft);}
+.total-card .k{display:block;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--soft);}
 .total-row{display:flex;align-items:baseline;justify-content:center;gap:8px;margin-top:6px;}
 input.total-in{width:auto;min-width:2ch;field-sizing:content;border:0;padding:0;background:transparent;
   text-align:center;font-size:44px;letter-spacing:-.02em;line-height:1;}
@@ -634,7 +633,7 @@ pub fn add_expense_page(
             }
             form method="post" action={ "/g/" (g.id) "/expenses" } {
                 div.total-card {
-                    div.k { "Total" }
+                    label.k for="amount" { "Total" }
                     div.total-row {
                         input.total-in type="text" name="amount" id="amount"
                             inputmode="decimal" placeholder="0.00" autofocus;
