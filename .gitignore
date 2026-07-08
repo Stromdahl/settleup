@@ -1,5 +1,8 @@
 /target
 
+# Claude Code local workspace (agent worktrees, settings, scratch)
+/.claude/
+
 # SQLite database + WAL/SHM sidecar files
 *.db
 *.db-shm
