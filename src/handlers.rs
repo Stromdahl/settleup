@@ -94,6 +94,13 @@ fn name_map(members: &[crate::models::Member]) -> HashMap<i64, String> {
     members.iter().map(|m| (m.id, m.name.clone())).collect()
 }
 
+/// May this member manage (edit or delete) an expense paid by `payer_id`? The original
+/// payer and the group owner can; nobody else. Callers still distinguish a missing
+/// expense (redirect back) from a forbidden one (403) themselves.
+fn can_manage(me: &crate::models::Member, payer_id: i64) -> bool {
+    payer_id == me.id || me.is_owner
+}
+
 /// Project the DB member rows onto the view's [`views::MemberRow`] (id, name, owner flag).
 fn member_rows(members: &[crate::models::Member]) -> Vec<views::MemberRow> {
     members
@@ -295,7 +302,7 @@ async fn build_ledger(
             description: e.description.clone(),
             participants,
             created_at: e.created_at.clone(),
-            can_manage: e.payer_id == me.id || me.is_owner,
+            can_manage: can_manage(me, e.payer_id),
         });
     }
 
@@ -550,7 +557,7 @@ pub async fn edit_expense_page(
     else {
         return Ok(Redirect::to(&format!("/g/{gid}")).into_response());
     };
-    if payer_id != me.id && !me.is_owner {
+    if !can_manage(&me, payer_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -592,7 +599,7 @@ pub async fn edit_expense(
     let Some(orig_payer) = db::expense_payer(&st.pool, &gid, eid).await? else {
         return Ok(back);
     };
-    if orig_payer != me.id && !me.is_owner {
+    if !can_manage(&me, orig_payer) {
         return Err(AppError::Forbidden);
     }
 
@@ -621,7 +628,7 @@ pub async fn delete_expense(
     let Some(payer_id) = db::expense_payer(&st.pool, &gid, eid).await? else {
         return Ok(back);
     };
-    if payer_id != me.id && !me.is_owner {
+    if !can_manage(&me, payer_id) {
         return Err(AppError::Forbidden);
     }
     db::soft_delete_expense(&st.pool, &gid, eid).await?;
