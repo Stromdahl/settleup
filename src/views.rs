@@ -10,6 +10,7 @@
 
 use crate::money::format_amount;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
+use std::collections::HashMap;
 
 const STYLES: &str = r#"
 :root{
@@ -147,6 +148,7 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
 .xrow-meta .rt{display:flex;align-items:center;gap:12px;flex:none;}
 .xrow-meta .time{font-size:12px;color:var(--soft);}
 .del{font-family:inherit;font-size:13px;font-weight:800;color:var(--alarm);background:none;border:0;cursor:pointer;padding:0;}
+.edit{font-family:inherit;font-size:13px;font-weight:800;color:var(--primary-2);cursor:pointer;}
 .pay{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .pay .pname{font-size:15px;font-weight:800;}
 .pay .ptime{font-size:12px;color:var(--soft);margin-top:3px;}
@@ -475,7 +477,8 @@ pub struct ExpenseRow {
     pub description: String,
     pub participants: String,
     pub created_at: String,
-    pub can_delete: bool,
+    /// May the current viewer edit or delete this expense (payer or owner)?
+    pub can_manage: bool,
 }
 pub struct SettlementRow {
     pub from: String,
@@ -619,46 +622,62 @@ pub fn group_page(v: &GroupView) -> Markup {
 /// The "New expense" screen — its own focused page (frame 04 of the redesign), reached
 /// from the group's sticky Add-expense button. Posts to the same `/g/{id}/expenses`
 /// endpoint as before and redirects back to the group on success.
-pub fn add_expense_page(
-    group: &crate::models::Group,
-    me: &crate::models::Member,
-    members: &[MemberRow],
-) -> Markup {
+/// Everything the shared expense form needs beyond the group and roster. Built once
+/// for a new expense (defaults) and once for an edit (prefilled from the stored row).
+struct ExpenseFormData {
+    /// POST target for the form.
+    action: String,
+    /// Page heading / `<title>` prefix, e.g. "New expense" or "Edit expense".
+    heading: &'static str,
+    /// Submit-button label.
+    submit: &'static str,
+    description: String,
+    /// Formatted total (`""` for a brand-new expense).
+    total: String,
+    payer_id: i64,
+    /// Whether the "Exact amounts" method is pre-selected (equal otherwise).
+    exact: bool,
+    /// Per member id: `(included?, formatted-amount-or-empty)`.
+    shares: HashMap<i64, (bool, String)>,
+}
+
+fn expense_form(group: &crate::models::Group, members: &[MemberRow], f: ExpenseFormData) -> Markup {
     let g = group;
     let cur = &g.currency;
     layout(
-        &format!("New expense · {}", g.name),
+        &format!("{} · {}", f.heading, g.name),
         "",
         html! {
             div.addhead {
-                h1 { "New expense" }
+                h1 { (f.heading) }
                 a.closebtn href={ "/g/" (g.id) } aria-label="Cancel" { (icon(P_CLOSE, 18)) }
             }
-            form method="post" action={ "/g/" (g.id) "/expenses" } {
+            form method="post" action=(f.action) {
                 div.total-card {
                     label.k for="amount" { "Total" }
                     div.total-row {
-                        input.total-in type="text" name="amount" id="amount"
+                        input.total-in type="text" name="amount" id="amount" value=(f.total)
                             inputmode="decimal" placeholder="0.00" autofocus;
                         span.cur { (cur) }
                     }
                 }
 
                 label.field-label for="description" { "What for?" }
-                input type="text" name="description" id="description" placeholder="Dinner, taxi, groceries…" required;
+                input type="text" name="description" id="description" value=(f.description)
+                    placeholder="Dinner, taxi, groceries…" required;
 
                 label.field-label for="payer_id" { "Who paid?" }
                 select name="payer_id" id="payer_id" {
                     @for m in members {
-                        option value=(m.id) selected[m.id == me.id] { (m.name) }
+                        option value=(m.id) selected[m.id == f.payer_id] { (m.name) }
                     }
                 }
 
                 label.field-label { "Split" }
                 div.seg {
-                    input type="radio" name="method" id="m-equal" value="equal" checked;
+                    input type="radio" name="method" id="m-equal" value="equal" checked[!f.exact];
                     label for="m-equal" { "Equally" }
-                    input type="radio" name="method" id="m-exact" value="exact";
+                    input type="radio" name="method" id="m-exact" value="exact" checked[f.exact];
                     label for="m-exact" { "Exact amounts" }
                 }
 
@@ -666,17 +685,81 @@ pub fn add_expense_page(
                 p.share-hint { "Tick who's in for an equal split, or type each person's amount for exact." }
                 div.list {
                     @for m in members {
+                        @let (inc, amt) = f.shares.get(&m.id).cloned().unwrap_or((false, String::new()));
                         div.share-row {
-                            input.chk type="checkbox" name={ "inc_" (m.id) } value="1" checked;
+                            input.chk type="checkbox" name={ "inc_" (m.id) } value="1" checked[inc];
                             (avatar(&m.name, m.id, "sm"))
                             span.name { (m.name) }
-                            input type="text" name={ "amt_" (m.id) } inputmode="decimal" placeholder="0.00";
+                            input type="text" name={ "amt_" (m.id) } value=(amt) inputmode="decimal" placeholder="0.00";
                         }
                     }
                 }
 
-                button.btn.primary.block type="submit" style="margin-top:20px" { "Add expense" }
+                button.btn.primary.block type="submit" style="margin-top:20px" { (f.submit) }
             }
+        },
+    )
+}
+
+pub fn add_expense_page(
+    group: &crate::models::Group,
+    me: &crate::models::Member,
+    members: &[MemberRow],
+) -> Markup {
+    // New expense: everyone ticked, no amounts, equal split, payer = current member.
+    let shares = members
+        .iter()
+        .map(|m| (m.id, (true, String::new())))
+        .collect();
+    expense_form(
+        group,
+        members,
+        ExpenseFormData {
+            action: format!("/g/{}/expenses", group.id),
+            heading: "New expense",
+            submit: "Add expense",
+            description: String::new(),
+            total: String::new(),
+            payer_id: me.id,
+            exact: false,
+            shares,
+        },
+    )
+}
+
+/// Edit form for an existing expense, prefilled from the stored row and its shares.
+/// The method toggle defaults to "Exact amounts" with each stored share filled in —
+/// always faithful, since the original equal/exact choice isn't persisted. Re-splitting
+/// equally (e.g. to fold in a newcomer) is one radio tap away.
+pub fn edit_expense_page(
+    group: &crate::models::Group,
+    members: &[MemberRow],
+    expense_id: i64,
+    payer_id: i64,
+    description: &str,
+    total_ore: i64,
+    current_shares: &[(i64, i64)],
+) -> Markup {
+    let included: HashMap<i64, i64> = current_shares.iter().copied().collect();
+    let shares = members
+        .iter()
+        .map(|m| match included.get(&m.id) {
+            Some(&amt) => (m.id, (true, format_amount(amt))),
+            None => (m.id, (false, String::new())),
+        })
+        .collect();
+    expense_form(
+        group,
+        members,
+        ExpenseFormData {
+            action: format!("/g/{}/expenses/{}/edit", group.id, expense_id),
+            heading: "Edit expense",
+            submit: "Save changes",
+            description: description.to_string(),
+            total: format_amount(total_ore),
+            payer_id,
+            exact: true,
+            shares,
         },
     )
 }
@@ -816,7 +899,10 @@ fn frag_ledger(v: &GroupView, oob: bool) -> Markup {
                                 span.who { (e.payer) " paid · " (e.participants) }
                                 div.rt {
                                     span.time { (fmt_dt(&e.created_at)) }
-                                    @if e.can_delete {
+                                    @if e.can_manage && !g.is_closed() {
+                                        a.edit href={ "/g/" (g.id) "/expenses/" (e.id) "/edit" } { "Edit" }
+                                    }
+                                    @if e.can_manage {
                                         form.inlineform method="post" action={ "/g/" (g.id) "/expenses/" (e.id) "/delete" } {
                                             button.del type="submit" { "Delete" }
                                         }

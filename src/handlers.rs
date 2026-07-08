@@ -301,7 +301,7 @@ async fn build_ledger(
             description: e.description.clone(),
             participants,
             created_at: e.created_at.clone(),
-            can_delete: e.payer_id == me.id || me.is_owner,
+            can_manage: e.payer_id == me.id || me.is_owner,
         });
     }
 
@@ -453,27 +453,20 @@ pub async fn join_group(
     Ok((jar, Redirect::to(&format!("/g/{gid}"))))
 }
 
-// --- Add / delete expense -------------------------------------------------------
+// --- Add / edit / delete expense ------------------------------------------------
 
-pub async fn add_expense(
-    State(st): State<AppState>,
-    Path(gid): Path<String>,
-    jar: CookieJar,
-    body: String,
-) -> Result<Redirect, AppError> {
-    let group = db::load_group(&st.pool, &gid)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    // Must be a member, group must be open.
-    current_member(&st.pool, &jar, &gid)
-        .await?
-        .ok_or(AppError::Forbidden)?;
-    let back = Redirect::to(&format!("/g/{gid}"));
-    if group.is_closed() {
-        return Ok(back);
-    }
-
-    let fields: Vec<(String, String)> = serde_urlencoded::from_str(&body).unwrap_or_default();
+/// Parse the dynamic add/edit expense form body into `(payer_id, description, shares)`,
+/// or `None` if the submission is invalid: unknown payer, empty description, no
+/// participating shares, or a non-positive total. Shared by [`add_expense`] and
+/// [`edit_expense`] so their parsing and validation can't drift.
+///
+/// `equal` split reads the `inc_<id>` checkboxes and the single `amount`; `exact` reads
+/// each `amt_<id>` field. Unknown member ids are ignored.
+fn parse_expense_form(
+    body: &str,
+    member_ids: &std::collections::HashSet<i64>,
+) -> Option<(i64, String, Vec<(i64, i64)>)> {
+    let fields: Vec<(String, String)> = serde_urlencoded::from_str(body).unwrap_or_default();
     let get = |key: &str| {
         fields
             .iter()
@@ -481,12 +474,9 @@ pub async fn add_expense(
             .map(|(_, v)| v.as_str())
     };
 
-    let members = db::list_members(&st.pool, &gid).await?;
-    let member_ids: std::collections::HashSet<i64> = members.iter().map(|m| m.id).collect();
-
     let payer_id: i64 = match get("payer_id").and_then(|s| s.parse().ok()) {
         Some(p) if member_ids.contains(&p) => p,
-        _ => return Ok(back),
+        _ => return None,
     };
     let description = get("description").unwrap_or("").trim().to_string();
     let method = get("method").unwrap_or("equal");
@@ -521,8 +511,35 @@ pub async fn add_expense(
 
     let total: i64 = shares.iter().map(|(_, a)| a).sum();
     if shares.is_empty() || total <= 0 || description.is_empty() {
+        return None;
+    }
+    Some((payer_id, description, shares))
+}
+
+pub async fn add_expense(
+    State(st): State<AppState>,
+    Path(gid): Path<String>,
+    jar: CookieJar,
+    body: String,
+) -> Result<Redirect, AppError> {
+    let group = db::load_group(&st.pool, &gid)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    // Must be a member, group must be open.
+    current_member(&st.pool, &jar, &gid)
+        .await?
+        .ok_or(AppError::Forbidden)?;
+    let back = Redirect::to(&format!("/g/{gid}"));
+    if group.is_closed() {
         return Ok(back);
     }
+
+    let members = db::list_members(&st.pool, &gid).await?;
+    let member_ids: std::collections::HashSet<i64> = members.iter().map(|m| m.id).collect();
+    let Some((payer_id, description, shares)) = parse_expense_form(&body, &member_ids) else {
+        return Ok(back);
+    };
+    let total: i64 = shares.iter().map(|(_, a)| a).sum();
 
     let mut tx = st.pool.begin().await?;
     let eid: i64 = sqlx::query_scalar(
@@ -535,6 +552,134 @@ pub async fn add_expense(
     .bind(&description)
     .fetch_one(&mut *tx)
     .await?;
+    for (mid, amt) in &shares {
+        sqlx::query("INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, ?)")
+            .bind(eid)
+            .bind(mid)
+            .bind(amt)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
+        .bind(&gid)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(back)
+}
+
+/// The prefilled edit form for an existing expense. Members-only; redirects back if the
+/// group is closed or the expense is gone; `Forbidden` unless the caller is the original
+/// payer or the owner (matches [`delete_expense`]).
+pub async fn edit_expense_page(
+    State(st): State<AppState>,
+    Path((gid, eid)): Path<(String, i64)>,
+    jar: CookieJar,
+) -> Result<Response, AppError> {
+    let group = db::load_group(&st.pool, &gid)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let me = current_member(&st.pool, &jar, &gid)
+        .await?
+        .ok_or(AppError::Forbidden)?;
+    if group.is_closed() {
+        return Ok(Redirect::to(&format!("/g/{gid}")).into_response());
+    }
+    let row: Option<(i64, i64, String)> = sqlx::query_as(
+        "SELECT payer_id, amount, description
+         FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL",
+    )
+    .bind(eid)
+    .bind(&gid)
+    .fetch_optional(&st.pool)
+    .await?;
+    let Some((payer_id, amount, description)) = row else {
+        return Ok(Redirect::to(&format!("/g/{gid}")).into_response());
+    };
+    if payer_id != me.id && !me.is_owner {
+        return Err(AppError::Forbidden);
+    }
+
+    let members = db::list_members(&st.pool, &gid).await?;
+    let member_rows: Vec<views::MemberRow> = members
+        .iter()
+        .map(|m| views::MemberRow {
+            id: m.id,
+            name: m.name.clone(),
+            is_owner: m.is_owner,
+        })
+        .collect();
+    let shares: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT member_id, amount FROM expense_shares WHERE expense_id = ? ORDER BY member_id",
+    )
+    .bind(eid)
+    .fetch_all(&st.pool)
+    .await?;
+    Ok(views::edit_expense_page(
+        &group,
+        &member_rows,
+        eid,
+        payer_id,
+        &description,
+        amount,
+        &shares,
+    )
+    .into_response())
+}
+
+/// Save an edit: replace the expense's payer/total/description and its share snapshot in
+/// one transaction. Same parse/validation as [`add_expense`]; balances recompute from the
+/// new shares (an edit is deliberately allowed even after settlements — see decision #13).
+pub async fn edit_expense(
+    State(st): State<AppState>,
+    Path((gid, eid)): Path<(String, i64)>,
+    jar: CookieJar,
+    body: String,
+) -> Result<Redirect, AppError> {
+    let group = db::load_group(&st.pool, &gid)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let me = current_member(&st.pool, &jar, &gid)
+        .await?
+        .ok_or(AppError::Forbidden)?;
+    let back = Redirect::to(&format!("/g/{gid}"));
+    if group.is_closed() {
+        return Ok(back);
+    }
+    // Expense must exist in this group; permission = original payer or owner.
+    let payer: Option<(i64,)> = sqlx::query_as(
+        "SELECT payer_id FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL",
+    )
+    .bind(eid)
+    .bind(&gid)
+    .fetch_optional(&st.pool)
+    .await?;
+    let Some((orig_payer,)) = payer else {
+        return Ok(back);
+    };
+    if orig_payer != me.id && !me.is_owner {
+        return Err(AppError::Forbidden);
+    }
+
+    let members = db::list_members(&st.pool, &gid).await?;
+    let member_ids: std::collections::HashSet<i64> = members.iter().map(|m| m.id).collect();
+    let Some((payer_id, description, shares)) = parse_expense_form(&body, &member_ids) else {
+        return Ok(back);
+    };
+    let total: i64 = shares.iter().map(|(_, a)| a).sum();
+
+    let mut tx = st.pool.begin().await?;
+    sqlx::query("UPDATE expenses SET payer_id = ?, amount = ?, description = ? WHERE id = ?")
+        .bind(payer_id)
+        .bind(total)
+        .bind(&description)
+        .bind(eid)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM expense_shares WHERE expense_id = ?")
+        .bind(eid)
+        .execute(&mut *tx)
+        .await?;
     for (mid, amt) in &shares {
         sqlx::query("INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, ?)")
             .bind(eid)

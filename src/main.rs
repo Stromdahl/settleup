@@ -60,6 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/g/{id}/join", post(handlers::join_group))
         .route("/g/{id}/expenses", post(handlers::add_expense))
         .route(
+            "/g/{id}/expenses/{eid}/edit",
+            get(handlers::edit_expense_page).post(handlers::edit_expense),
+        )
+        .route(
             "/g/{id}/expenses/{eid}/delete",
             post(handlers::delete_expense),
         )
