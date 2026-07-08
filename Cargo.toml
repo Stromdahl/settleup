@@ -15,6 +15,7 @@ maud = { version = "0.27", features = ["axum"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 qrcode = "0.14"
 rand = "0.9"
+argon2 = { version = "0.5", features = ["std"] }
 sha2 = "0.10"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }

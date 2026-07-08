@@ -3,6 +3,7 @@ mod handlers;
 mod ids;
 mod models;
 mod money;
+mod pw;
 mod settle;
 mod views;
 
@@ -50,6 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool,
         base_url,
         secure_cookies,
+        recovery_attempts: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
     let app = Router::new()
         .route("/", get(handlers::landing).post(handlers::create_group))

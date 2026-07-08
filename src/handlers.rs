@@ -10,12 +10,21 @@ use maud::Markup;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::db;
 use crate::ids;
 use crate::money::{MAX_AMOUNT_ORE, parse_amount};
+use crate::pw;
 use crate::settle::{self, equal_shares};
 use crate::views::{self, GroupView};
+
+/// Recovery brute-force guard: at most this many failed passphrase attempts per group
+/// within [`RECOVERY_WINDOW`] before further attempts are rejected without checking.
+const MAX_RECOVERY_ATTEMPTS: usize = 10;
+/// Rolling window over which [`MAX_RECOVERY_ATTEMPTS`] failures are counted.
+const RECOVERY_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -25,6 +34,51 @@ pub struct AppState {
     pub base_url: Option<String>,
     /// Set the `Secure` flag on cookies (enable when served over HTTPS).
     pub secure_cookies: bool,
+    /// Failed recovery-passphrase attempt timestamps, keyed by group id. In-memory and
+    /// per-group (the attacked resource) — not per-IP, which is unreliable behind the
+    /// reverse proxy this app runs behind. `Arc` keeps `AppState` cheap to clone.
+    pub recovery_attempts: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+}
+
+impl AppState {
+    /// Lock the recovery-attempts map, recovering from a poisoned mutex rather than
+    /// panicking (a poisoned lock only means some other request panicked mid-update;
+    /// the rate-limit bookkeeping is still safe to read and prune).
+    fn recovery_map(&self) -> std::sync::MutexGuard<'_, HashMap<String, Vec<Instant>>> {
+        match self.recovery_attempts.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Is this group currently over its failed-attempt limit? Prunes stale timestamps
+    /// as a side effect. Runs synchronously and drops the guard before returning, so no
+    /// lock is ever held across an `.await`.
+    fn recovery_over_limit(&self, gid: &str) -> bool {
+        let now = Instant::now();
+        let mut map = self.recovery_map();
+        match map.get_mut(gid) {
+            Some(times) => {
+                times.retain(|t| now.duration_since(*t) < RECOVERY_WINDOW);
+                times.len() >= MAX_RECOVERY_ATTEMPTS
+            }
+            None => false,
+        }
+    }
+
+    /// Record a failed recovery attempt for a group (pruning stale timestamps first).
+    fn record_recovery_failure(&self, gid: &str) {
+        let now = Instant::now();
+        let mut map = self.recovery_map();
+        let times = map.entry(gid.to_string()).or_default();
+        times.retain(|t| now.duration_since(*t) < RECOVERY_WINDOW);
+        times.push(now);
+    }
+
+    /// Clear a group's failed-attempt counter (on a successful recovery).
+    fn clear_recovery_attempts(&self, gid: &str) {
+        self.recovery_map().remove(gid);
+    }
 }
 
 // --- Error handling -------------------------------------------------------------
@@ -34,6 +88,8 @@ pub enum AppError {
     NotFound,
     Forbidden,
     Db(sqlx::Error),
+    /// An opaque server-side failure (e.g. passphrase hashing) — logged, surfaced as 500.
+    Internal(String),
 }
 
 impl From<sqlx::Error> for AppError {
@@ -49,6 +105,10 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (StatusCode::FORBIDDEN, "Forbidden").into_response(),
             AppError::Db(e) => {
                 eprintln!("db error: {e}");
+                (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong").into_response()
+            }
+            AppError::Internal(msg) => {
+                eprintln!("internal error: {msg}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong").into_response()
             }
         }
@@ -744,9 +804,12 @@ pub async fn set_recovery(
     if pass.is_empty() {
         return Ok(back);
     }
-    // Stored as an unsalted SHA-256 hash — adequate for this low-value recovery
-    // secret in v1; swap for a proper KDF (argon2) if this ever guards real value.
-    db::set_recovery(&st.pool, &gid, &ids::hash_token(pass)).await?;
+    // Stored as an argon2id PHC string (memory-hard, per-group random salt) so the
+    // recovery secret — which guards owner takeover — resists offline cracking and
+    // never collides across groups.
+    let hash =
+        pw::hash_passphrase(pass).map_err(|e| AppError::Internal(format!("recovery hash: {e}")))?;
+    db::set_recovery(&st.pool, &gid, &hash).await?;
     Ok(back)
 }
 
@@ -769,15 +832,22 @@ pub async fn recover_submit(
     let group = db::load_group(&st.pool, &gid)
         .await?
         .ok_or(AppError::NotFound)?;
+    // Brute-force guard: a group link is widely shared, so cap failed attempts per
+    // group. Over the limit, reject without even checking the passphrase.
+    if st.recovery_over_limit(&gid) {
+        return Ok(views::recover(&group, true).into_response());
+    }
     let matches = group
         .recovery
         .as_deref()
-        .map(|stored| stored == ids::hash_token(form.passphrase.trim()))
+        .map(|stored| pw::verify_passphrase(form.passphrase.trim(), stored))
         .unwrap_or(false);
     if !matches {
+        st.record_recovery_failure(&gid);
         return Ok(views::recover(&group, true).into_response());
     }
-    // Rotate the owner's device token onto this device.
+    // Success: clear the counter, then rotate the owner's device token onto this device.
+    st.clear_recovery_attempts(&gid);
     let token = ids::device_token();
     db::rotate_owner_token(&st.pool, &gid, &ids::hash_token(&token)).await?;
     let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
@@ -838,6 +908,7 @@ mod tests {
             pool,
             base_url: None,
             secure_cookies: false,
+            recovery_attempts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1801,10 +1872,14 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(
-            stored,
-            Some(ids::hash_token("hunter2")),
-            "passphrase is trimmed then hashed"
+        let stored = stored.expect("a recovery hash is stored");
+        assert!(
+            stored.starts_with("$argon2id$"),
+            "stored as an argon2id PHC string, not a raw hex digest"
+        );
+        assert!(
+            pw::verify_passphrase("hunter2", &stored),
+            "the trimmed passphrase verifies against the stored hash"
         );
     }
 
@@ -1880,6 +1955,64 @@ mod tests {
             owner_token_hash(&pool, &gid).await,
             old_hash,
             "and rotates nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_submit_rate_limits_per_group() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        // One shared AppState so the in-memory attempt counter persists across calls
+        // (clone shares the Arc<Mutex<..>> map).
+        let st = state(pool.clone());
+        let _ = set_recovery(
+            State(st.clone()),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            axum::Form(RecoveryForm {
+                passphrase: "hunter2".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let old_hash = owner_token_hash(&pool, &gid).await;
+
+        // Exhaust the limit with wrong guesses; each just re-renders the form.
+        for _ in 0..MAX_RECOVERY_ATTEMPTS {
+            let resp = recover_submit(
+                State(st.clone()),
+                Path(gid.clone()),
+                CookieJar::new(),
+                axum::Form(RecoveryForm {
+                    passphrase: "wrong".into(),
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        // Now even the CORRECT passphrase is rejected pre-verification by the limiter,
+        // so the owner token is not rotated — proof the guard fired.
+        let resp = recover_submit(
+            State(st.clone()),
+            Path(gid.clone()),
+            CookieJar::new(),
+            axum::Form(RecoveryForm {
+                passphrase: "hunter2".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "over the limit, the request is rejected without checking the passphrase"
+        );
+        assert_eq!(
+            owner_token_hash(&pool, &gid).await,
+            old_hash,
+            "a rate-limited attempt rotates nothing, even with the correct passphrase"
         );
     }
 
