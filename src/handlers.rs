@@ -668,23 +668,20 @@ pub async fn mark_settlement(
     if !ids.contains(&form.from_id) || !ids.contains(&form.to_id) {
         return Ok(back);
     }
-    // Clamp to the actual outstanding debt so a double-tap (two people marking the
-    // same suggested payment) can't overshoot and invent a reverse debt.
+    // Clamp to the actual outstanding debt so a double-tap (two people marking the same
+    // suggested payment) can't overshoot and invent a reverse debt. The read + clamp +
+    // insert run in one serialized write transaction, so a concurrent second request sees
+    // the first's committed settlement and clamps to what's left (see db::insert_settlement_clamped).
     let member_ids: Vec<i64> = members.iter().map(|m| m.id).collect();
-    let payments = db::expense_payments(&st.pool, &gid).await?;
-    let shares = db::expense_share_rows(&st.pool, &gid).await?;
-    let settle_rows = db::settlement_rows(&st.pool, &gid).await?;
-    let balances: HashMap<i64, i64> =
-        settle::net_balances(&member_ids, &payments, &shares, &settle_rows)
-            .into_iter()
-            .collect();
-    let owes = (-balances.get(&form.from_id).copied().unwrap_or(0)).max(0);
-    let owed = balances.get(&form.to_id).copied().unwrap_or(0).max(0);
-    let amount = form.amount_ore.min(owes).min(owed);
-    if amount <= 0 {
-        return Ok(back);
-    }
-    db::insert_settlement(&st.pool, &gid, form.from_id, form.to_id, amount).await?;
+    db::insert_settlement_clamped(
+        &st.pool,
+        &gid,
+        &member_ids,
+        form.from_id,
+        form.to_id,
+        form.amount_ore,
+    )
+    .await?;
     Ok(back)
 }
 

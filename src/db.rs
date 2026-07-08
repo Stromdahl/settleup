@@ -1,7 +1,9 @@
 //! Database connection, schema, and query helpers.
 
 use crate::models::{Expense, Group, Member, Settlement};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS groups (
@@ -60,7 +62,12 @@ pub async fn connect(path: &str) -> Result<SqlitePool, sqlx::Error> {
     let opts = SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        // WAL lets readers and a writer proceed concurrently; in the default rollback
+        // journal a commit blocks all readers, which stalls the 5s `/live` poll fanning
+        // reads across the pool. NORMAL sync is the safe, standard pairing with WAL.
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(opts)
@@ -86,12 +93,12 @@ pub(crate) async fn touch_group(pool: &SqlitePool, group_id: &str) -> Result<(),
 /// group activity funnels through here; the deliberate non-bumpers (create, close,
 /// recovery) simply don't call it.
 async fn bump_last_active(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     group_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
         .bind(group_id)
-        .execute(&mut **tx)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
@@ -142,25 +149,102 @@ pub async fn insert_member(
     Ok(())
 }
 
-/// Record a settlement transfer, bumping the group's `last_active` in the same transaction.
-pub async fn insert_settlement(
+/// Record a settlement transfer, clamped atomically to the outstanding debt so two
+/// concurrent "mark this payment" requests can't over-settle and invent a reverse debt.
+///
+/// The read (balances) + clamp + insert all run inside one `BEGIN IMMEDIATE` transaction
+/// so the second request sees the first's committed row and clamps to what's left. We use
+/// a raw connection with an explicit `BEGIN IMMEDIATE` rather than `pool.begin()`, because
+/// sqlx issues a *deferred* BEGIN that only takes a write lock lazily — two deferred
+/// transactions can both hold SHARED then deadlock trying to upgrade to RESERVED.
+/// `BEGIN IMMEDIATE` takes the write lock up front, so the second writer blocks (bounded
+/// by `busy_timeout`) instead of racing.
+///
+/// Returns the amount actually settled: the clamped transfer on success, or `0` if there
+/// was nothing left to settle (no row inserted).
+pub async fn insert_settlement_clamped(
     pool: &SqlitePool,
     group_id: &str,
+    member_ids: &[i64],
     from_id: i64,
     to_id: i64,
-    amount: i64,
-) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    requested: i64,
+) -> Result<i64, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    match settle_clamped_tx(&mut conn, group_id, member_ids, from_id, to_id, requested).await {
+        Ok(amount) => match sqlx::query("COMMIT").execute(&mut *conn).await {
+            Ok(_) => Ok(amount),
+            Err(e) => {
+                // A failed COMMIT leaves the transaction open; roll it back (best-effort)
+                // so the connection returns to the pool clean, then surface the error.
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        },
+        Err(e) => {
+            // Best-effort rollback; return the original error regardless.
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            Err(e)
+        }
+    }
+}
+
+/// The body of [`insert_settlement_clamped`], run on a connection already inside a
+/// `BEGIN IMMEDIATE` transaction. Reads the same three balance inputs as the pooled
+/// `expense_payments` / `expense_share_rows` / `settlement_rows` helpers, but on this
+/// connection so the read is serialized with the insert.
+async fn settle_clamped_tx(
+    conn: &mut sqlx::SqliteConnection,
+    group_id: &str,
+    member_ids: &[i64],
+    from_id: i64,
+    to_id: i64,
+    requested: i64,
+) -> Result<i64, sqlx::Error> {
+    let payments: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT payer_id, amount FROM expenses
+         WHERE group_id = ? AND deleted_at IS NULL",
+    )
+    .bind(group_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let shares: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT s.member_id, s.amount
+         FROM expense_shares s
+         JOIN expenses e ON e.id = s.expense_id
+         WHERE e.group_id = ? AND e.deleted_at IS NULL",
+    )
+    .bind(group_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let settle_rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT from_id, to_id, amount FROM settlements
+         WHERE group_id = ? AND deleted_at IS NULL",
+    )
+    .bind(group_id)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let balances: std::collections::HashMap<i64, i64> =
+        crate::settle::net_balances(member_ids, &payments, &shares, &settle_rows)
+            .into_iter()
+            .collect();
+    let owes = (-balances.get(&from_id).copied().unwrap_or(0)).max(0);
+    let owed = balances.get(&to_id).copied().unwrap_or(0).max(0);
+    let amount = requested.min(owes).min(owed);
+    if amount <= 0 {
+        return Ok(0);
+    }
     sqlx::query("INSERT INTO settlements (group_id, from_id, to_id, amount) VALUES (?, ?, ?, ?)")
         .bind(group_id)
         .bind(from_id)
         .bind(to_id)
         .bind(amount)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
-    bump_last_active(&mut tx, group_id).await?;
-    tx.commit().await?;
-    Ok(())
+    bump_last_active(&mut *conn, group_id).await?;
+    Ok(amount)
 }
 
 /// Mark a group closed. Deliberately does **not** bump `last_active` (closing is not
@@ -603,5 +687,78 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(counts, (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn clamped_settlement_settles_once_then_becomes_a_noop() {
+        let pool = test_pool().await;
+        // Backdate so a later `last_active` bump is unambiguous (not a same-second tie).
+        sqlx::query(
+            "INSERT INTO groups (id, name, last_active) VALUES ('g', 'G', datetime('now','-1 day'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let a: i64 = sqlx::query_scalar(
+            "INSERT INTO members (group_id, name, token_hash) VALUES ('g','A','ha') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let b: i64 = sqlx::query_scalar(
+            "INSERT INTO members (group_id, name, token_hash) VALUES ('g','B','hb') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // B fronts 100 split equally → A owes B 50.
+        let eid: i64 = sqlx::query_scalar(
+            "INSERT INTO expenses (group_id, payer_id, amount, description)
+             VALUES ('g', ?, 100, 'x') RETURNING id",
+        )
+        .bind(b)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for (m, amt) in [(a, 50), (b, 50)] {
+            sqlx::query(
+                "INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, ?)",
+            )
+            .bind(eid)
+            .bind(m)
+            .bind(amt)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let before: String = sqlx::query_scalar("SELECT last_active FROM groups WHERE id = 'g'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let member_ids = vec![a, b];
+        // First mark: 100 requested clamps to the 50 A owes and inserts a row.
+        let first = insert_settlement_clamped(&pool, "g", &member_ids, a, b, 100)
+            .await
+            .unwrap();
+        assert_eq!(first, 50, "clamped to the outstanding debt");
+        // Second mark of the same suggested payment: nothing left, insert nothing.
+        let second = insert_settlement_clamped(&pool, "g", &member_ids, a, b, 100)
+            .await
+            .unwrap();
+        assert_eq!(second, 0, "already settled → a no-op");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM settlements WHERE group_id = 'g'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "only the first mark inserted a settlement");
+
+        let after: String = sqlx::query_scalar("SELECT last_active FROM groups WHERE id = 'g'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_ne!(after, before, "the settling insert bumped last_active");
     }
 }
