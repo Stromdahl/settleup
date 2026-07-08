@@ -422,7 +422,7 @@ pub fn landing() -> Markup {
                     p.lead { "Split a bar tab or your monthly expenses. Everyone adds what they paid — then settle up in the fewest payments." }
                 }
             }
-            form method="post" action="/" style="margin-top:22px" {
+            form method="post" action="/" style="margin-top:22px" hx-disabled-elt="find button[type=submit]" {
                 div.card {
                     label.field-label for="name" { "Group name" }
                     input type="text" name="name" id="name" placeholder="Friday drinks" required;
@@ -469,7 +469,7 @@ pub fn claim(group: &crate::models::Group, members: &[MemberRow], total: i64) ->
                 }
             }
 
-            form method="post" action={ "/g/" (group.id) "/join" } style="margin-top:22px" {
+            form method="post" action={ "/g/" (group.id) "/join" } style="margin-top:22px" hx-disabled-elt="find button[type=submit]" {
                 label.field-label for="name" { "Your name" }
                 input type="text" name="name" id="name" placeholder="Your name" required autofocus;
                 button.btn.primary.block type="submit" style="margin-top:16px" { "Join " (group.name) }
@@ -499,7 +499,7 @@ pub fn recover(group: &crate::models::Group, error: bool) -> Markup {
                     span style="color:var(--alarm);font-weight:800" { "That passphrase didn't match." }
                 }
             }
-            form method="post" action={ "/g/" (group.id) "/recover" } style="margin-top:18px" {
+            form method="post" action={ "/g/" (group.id) "/recover" } style="margin-top:18px" hx-disabled-elt="find button[type=submit]" {
                 label.field-label for="passphrase" { "Recovery passphrase" }
                 input type="password" name="passphrase" id="passphrase" required autofocus;
                 button.btn.primary.block type="submit" style="margin-top:16px" { "Recover access" }
@@ -633,7 +633,7 @@ pub fn group_page(v: &GroupView) -> Markup {
             @if v.me.is_owner {
                 div.section { "Owner" }
                 @if !g.has_recovery() {
-                    form method="post" action={ "/g/" (g.id) "/recovery" } .note {
+                    form method="post" action={ "/g/" (g.id) "/recovery" } .note hx-disabled-elt="find button[type=submit]" {
                         div.note-head { (icon(P_LOCK, 17)) span { "This tab disappears in 3 days unless you keep it" } }
                         div.note-body { "Set a recovery passphrase to keep it forever and restore access on another device." }
                         input type="password" name="passphrase" id="passphrase" placeholder="Recovery passphrase" required;
@@ -649,11 +649,11 @@ pub fn group_page(v: &GroupView) -> Markup {
                 }
                 div.row-actions {
                     @if !closed {
-                        form.inlineform method="post" action={ "/g/" (g.id) "/close" } {
+                        form.inlineform method="post" action={ "/g/" (g.id) "/close" } hx-disabled-elt="find button[type=submit]" {
                             button.btn.ghost.sm type="submit" { "Settle & close" }
                         }
                     } @else {
-                        form.inlineform method="post" action={ "/g/" (g.id) "/reopen" } {
+                        form.inlineform method="post" action={ "/g/" (g.id) "/reopen" } hx-disabled-elt="find button[type=submit]" {
                             button.btn.primary.sm type="submit" { "Reopen group" }
                         }
                     }
@@ -708,7 +708,7 @@ fn expense_form(group: &crate::models::Group, members: &[MemberRow], f: ExpenseF
                 h1 { (f.heading) }
                 a.closebtn href={ "/g/" (g.id) } aria-label="Cancel" { (icon(P_CLOSE, 18)) }
             }
-            form method="post" action=(f.action) {
+            form method="post" action=(f.action) hx-disabled-elt="find button[type=submit]" {
                 div.total-card {
                     label.k for="amount" { "Total" }
                     div.total-row {
@@ -875,7 +875,7 @@ fn frag_hero(v: &GroupView, oob: bool) -> Markup {
                                     div.names { (t.from) " → " (t.to) }
                                     div.amt { (format_amount(t.amount)) " " span.cur { (cur) } }
                                 }
-                                form.inlineform method="post" action={ "/g/" (g.id) "/settlements" } {
+                                form.inlineform method="post" action={ "/g/" (g.id) "/settlements" } hx-disabled-elt="find button[type=submit]" {
                                     input type="hidden" name="from_id" value=(t.from_id);
                                     input type="hidden" name="to_id" value=(t.to_id);
                                     input type="hidden" name="amount_ore" value=(t.amount);
@@ -958,7 +958,7 @@ fn frag_ledger(v: &GroupView, oob: bool) -> Markup {
                                     @if e.can_manage && !g.is_closed() {
                                         a.edit href={ "/g/" (g.id) "/expenses/" (e.id) "/edit" } { "Edit" }
                                     }
-                                    @if e.can_manage {
+                                    @if e.can_manage && !g.is_closed() {
                                         form.inlineform method="post" action={ "/g/" (g.id) "/expenses/" (e.id) "/delete" } {
                                             button.del type="submit" { "Delete" }
                                         }

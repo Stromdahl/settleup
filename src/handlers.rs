@@ -622,10 +622,16 @@ pub async fn delete_expense(
     Path((gid, eid)): Path<(String, i64)>,
     jar: CookieJar,
 ) -> Result<Redirect, AppError> {
+    let group = db::load_group(&st.pool, &gid)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let me = current_member(&st.pool, &jar, &gid)
         .await?
         .ok_or(AppError::Forbidden)?;
     let back = Redirect::to(&format!("/g/{gid}"));
+    if group.is_closed() {
+        return Ok(back);
+    }
     // Only the payer or the owner may delete.
     let Some(payer_id) = db::expense_payer(&st.pool, &gid, eid).await? else {
         return Ok(back);
@@ -1531,6 +1537,43 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(live, 1, "a rejected delete changes nothing");
+    }
+
+    #[tokio::test]
+    async fn delete_expense_on_closed_group_deletes_nothing() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
+            .bind(&gid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Handler returns a plain redirect but must not mutate a frozen group.
+        let _ = delete_expense(
+            State(state(pool.clone())),
+            Path((gid.clone(), eid)),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .map_err(|_| "closed-group delete should redirect, not error")
+        .unwrap();
+        let live: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM expenses WHERE group_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&gid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(live, 1, "a closed group must not accept deletes");
     }
 
     // --- Settlements --------------------------------------------------------------
