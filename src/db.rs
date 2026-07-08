@@ -78,6 +78,114 @@ pub async fn touch_group(pool: &SqlitePool, group_id: &str) -> Result<(), sqlx::
     Ok(())
 }
 
+/// Create a group and its owner member in one transaction. `owner_token_hash` is the
+/// hashed device token that authenticates the creator's device.
+pub async fn create_group_with_owner(
+    pool: &SqlitePool,
+    group_id: &str,
+    name: &str,
+    currency: &str,
+    owner_name: &str,
+    owner_token_hash: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("INSERT INTO groups (id, name, currency) VALUES (?, ?, ?)")
+        .bind(group_id)
+        .bind(name)
+        .bind(currency)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, ?, ?, 1)")
+        .bind(group_id)
+        .bind(owner_name)
+        .bind(owner_token_hash)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Insert a non-owner member. Callers bump `last_active` separately (see [`touch_group`]).
+pub async fn insert_member(
+    pool: &SqlitePool,
+    group_id: &str,
+    name: &str,
+    token_hash: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, ?, ?, 0)")
+        .bind(group_id)
+        .bind(name)
+        .bind(token_hash)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Record a settlement transfer. Callers bump `last_active` separately (see [`touch_group`]).
+pub async fn insert_settlement(
+    pool: &SqlitePool,
+    group_id: &str,
+    from_id: i64,
+    to_id: i64,
+    amount: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO settlements (group_id, from_id, to_id, amount) VALUES (?, ?, ?, ?)")
+        .bind(group_id)
+        .bind(from_id)
+        .bind(to_id)
+        .bind(amount)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Mark a group closed. Deliberately does **not** bump `last_active` (closing is not
+/// activity that should keep a group from expiring).
+pub async fn close_group(pool: &SqlitePool, group_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
+        .bind(group_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Reopen a group, bumping `last_active` (reopening is activity).
+pub async fn reopen_group(pool: &SqlitePool, group_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE groups SET closed_at = NULL, last_active = datetime('now') WHERE id = ?")
+        .bind(group_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Store a group's recovery secret (already hashed by the caller).
+pub async fn set_recovery(
+    pool: &SqlitePool,
+    group_id: &str,
+    recovery_hash: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE groups SET recovery = ? WHERE id = ?")
+        .bind(recovery_hash)
+        .bind(group_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Rotate the owner's device token onto a new device (used by passphrase recovery).
+pub async fn rotate_owner_token(
+    pool: &SqlitePool,
+    group_id: &str,
+    token_hash: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE members SET token_hash = ? WHERE group_id = ? AND is_owner = 1")
+        .bind(token_hash)
+        .bind(group_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn load_group(pool: &SqlitePool, id: &str) -> Result<Option<Group>, sqlx::Error> {
     sqlx::query_as::<_, Group>("SELECT * FROM groups WHERE id = ?")
         .bind(id)

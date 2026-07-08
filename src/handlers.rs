@@ -146,20 +146,15 @@ pub async fn create_group(
     let gid = ids::group_id();
     let token = ids::device_token();
 
-    let mut tx = st.pool.begin().await?;
-    sqlx::query("INSERT INTO groups (id, name, currency) VALUES (?, ?, ?)")
-        .bind(&gid)
-        .bind(name)
-        .bind(&currency)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, ?, ?, 1)")
-        .bind(&gid)
-        .bind(your_name)
-        .bind(ids::hash_token(&token))
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
+    db::create_group_with_owner(
+        &st.pool,
+        &gid,
+        name,
+        &currency,
+        your_name,
+        &ids::hash_token(&token),
+    )
+    .await?;
 
     let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
     Ok((jar, Redirect::to(&format!("/g/{gid}"))))
@@ -443,12 +438,7 @@ pub async fn join_group(
         return Ok((jar, Redirect::to(&format!("/g/{gid}"))));
     }
     let token = ids::device_token();
-    sqlx::query("INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, ?, ?, 0)")
-        .bind(&group.id)
-        .bind(name)
-        .bind(ids::hash_token(&token))
-        .execute(&st.pool)
-        .await?;
+    db::insert_member(&st.pool, &group.id, name, &ids::hash_token(&token)).await?;
     db::touch_group(&st.pool, &gid).await?;
     let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
     Ok((jar, Redirect::to(&format!("/g/{gid}"))))
@@ -704,13 +694,7 @@ pub async fn mark_settlement(
     if amount <= 0 {
         return Ok(back);
     }
-    sqlx::query("INSERT INTO settlements (group_id, from_id, to_id, amount) VALUES (?, ?, ?, ?)")
-        .bind(&gid)
-        .bind(form.from_id)
-        .bind(form.to_id)
-        .bind(amount)
-        .execute(&st.pool)
-        .await?;
+    db::insert_settlement(&st.pool, &gid, form.from_id, form.to_id, amount).await?;
     db::touch_group(&st.pool, &gid).await?;
     Ok(back)
 }
@@ -737,10 +721,7 @@ pub async fn close_group(
     jar: CookieJar,
 ) -> Result<Redirect, AppError> {
     require_owner(&st.pool, &jar, &gid).await?;
-    sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
-        .bind(&gid)
-        .execute(&st.pool)
-        .await?;
+    db::close_group(&st.pool, &gid).await?;
     Ok(Redirect::to(&format!("/g/{gid}")))
 }
 
@@ -750,10 +731,7 @@ pub async fn reopen_group(
     jar: CookieJar,
 ) -> Result<Redirect, AppError> {
     require_owner(&st.pool, &jar, &gid).await?;
-    sqlx::query("UPDATE groups SET closed_at = NULL, last_active = datetime('now') WHERE id = ?")
-        .bind(&gid)
-        .execute(&st.pool)
-        .await?;
+    db::reopen_group(&st.pool, &gid).await?;
     Ok(Redirect::to(&format!("/g/{gid}")))
 }
 
@@ -776,11 +754,7 @@ pub async fn set_recovery(
     }
     // Stored as an unsalted SHA-256 hash — adequate for this low-value recovery
     // secret in v1; swap for a proper KDF (argon2) if this ever guards real value.
-    sqlx::query("UPDATE groups SET recovery = ? WHERE id = ?")
-        .bind(ids::hash_token(pass))
-        .bind(&gid)
-        .execute(&st.pool)
-        .await?;
+    db::set_recovery(&st.pool, &gid, &ids::hash_token(pass)).await?;
     Ok(back)
 }
 
@@ -813,11 +787,7 @@ pub async fn recover_submit(
     }
     // Rotate the owner's device token onto this device.
     let token = ids::device_token();
-    sqlx::query("UPDATE members SET token_hash = ? WHERE group_id = ? AND is_owner = 1")
-        .bind(ids::hash_token(&token))
-        .bind(&gid)
-        .execute(&st.pool)
-        .await?;
+    db::rotate_owner_token(&st.pool, &gid, &ids::hash_token(&token)).await?;
     let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
     Ok((jar, Redirect::to(&format!("/g/{gid}"))).into_response())
 }
