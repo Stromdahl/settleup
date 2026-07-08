@@ -257,6 +257,42 @@ across unpkg and jsdelivr (sha256 `e209dda5…fb447`).
 
 ---
 
+## 13. In-place expense editing; "rebalance on join" is a manual re-split
+
+**Decision:** An expense can be **edited in place** at `GET`/`POST /g/{id}/expenses/{eid}/edit`
+— a prefilled twin of the add-expense screen that rewrites the payer, total, description,
+participant set, and per-share amounts. The edit **replaces the `expense_shares` snapshot**
+in one transaction (update the row, delete the old shares, insert the new ones). Permission
+matches delete: the **original payer or the owner**. Editing is refused on a **closed**
+group (like adding). This retires the "delete + re-add" workaround from decision #6.
+
+Pulling a **newly-joined member into a past expense** ("rebalance when new people join") is
+**this same edit, done by hand**: open the round they should have been in, tick them, save.
+There is deliberately **no join-triggered auto-rebalance** — the per-expense share snapshot
+(#6) is what makes the 7pm round stay off the 9pm arrival's tab, and a blanket retroactive
+re-split would violate that. New expenses already include newcomers automatically, so the
+only surface that needed a tool was the retroactive one, and manual edit is it.
+
+**Why:** Editing was always the planned next slice (#6); the snapshot model makes it a clean
+replace rather than a schema change. Keeping "rebalance on join" as manual editing respects a
+deliberate design decision and is strictly less surprising than firing changes on other
+people's ledgers when someone walks in.
+
+**Consequence:** An edit is allowed **even after settlements are recorded**, and balances
+simply recompute from the new shares plus the existing settlements — so an edit can push a
+recorded payment above the new outstanding debt and surface a reverse balance (e.g. someone
+is now *owed* what they paid). This matches the app's forgiving, trust-based posture and the
+fact that soft-delete already recomputes balances the same way; `mark_settlement` still
+clamps at settlement time, but a later edit is not re-clamped. The original **equal-vs-exact
+choice isn't persisted**, so the edit form defaults to **"Exact amounts"** with each stored
+share filled in (always faithful); re-splitting equally is one radio tap. Live updates need
+nothing new: an edit bumps `last_active`, so the existing poll (#10) repaints the read-only
+regions via the same OOB swaps as add/delete/settle.
+
+**Captured while implementing edit on 2026-07-08.**
+
+---
+
 ## Explicitly out of scope for v1
 
 Real accounts · itemized / percentage splits · multiple payers per expense · multi-currency

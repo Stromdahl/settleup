@@ -68,7 +68,6 @@ Licensed under the GNU General Public License v3.0 (`GPL-3.0-only`). See
 
 ## Known v1 limitations
 
-- No in-place expense editing (delete + re-add).
 - No CSRF tokens (mitigated by `SameSite=Lax` cookies); add tokens if hardening.
 - No Content-Security-Policy yet: the app uses inline `<style>`/`<script>`, so a strict
   CSP needs `'unsafe-inline'` or nonces first. (htmx is now vendored and self-served —
