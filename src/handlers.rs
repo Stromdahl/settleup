@@ -94,6 +94,18 @@ fn name_map(members: &[crate::models::Member]) -> HashMap<i64, String> {
     members.iter().map(|m| (m.id, m.name.clone())).collect()
 }
 
+/// Project the DB member rows onto the view's [`views::MemberRow`] (id, name, owner flag).
+fn member_rows(members: &[crate::models::Member]) -> Vec<views::MemberRow> {
+    members
+        .iter()
+        .map(|m| views::MemberRow {
+            id: m.id,
+            name: m.name.clone(),
+            is_owner: m.is_owner,
+        })
+        .collect()
+}
+
 // --- Static assets --------------------------------------------------------------
 
 /// Vendored htmx, compiled into the binary and served from our own origin so the app
@@ -179,14 +191,7 @@ pub async fn group_page(
             // (who started it, how many are in, the running tab) — all read-only, and
             // anyone with the link can join and see it anyway.
             let members = db::list_members(&st.pool, &gid).await?;
-            let member_rows: Vec<views::MemberRow> = members
-                .iter()
-                .map(|m| views::MemberRow {
-                    id: m.id,
-                    name: m.name.clone(),
-                    is_owner: m.is_owner,
-                })
-                .collect();
+            let member_rows = member_rows(&members);
             let total: i64 = db::list_expenses(&st.pool, &gid)
                 .await?
                 .iter()
@@ -222,14 +227,7 @@ pub async fn add_expense_page(
         return Ok(Redirect::to(&format!("/g/{gid}")).into_response());
     }
     let members = db::list_members(&st.pool, &gid).await?;
-    let member_rows: Vec<views::MemberRow> = members
-        .iter()
-        .map(|m| views::MemberRow {
-            id: m.id,
-            name: m.name.clone(),
-            is_owner: m.is_owner,
-        })
-        .collect();
+    let member_rows = member_rows(&members);
     Ok(views::add_expense_page(&group, &me, &member_rows).into_response())
 }
 
@@ -330,19 +328,11 @@ fn group_view<'a>(
     ledger: Ledger,
     version: i64,
 ) -> GroupView<'a> {
-    let member_rows: Vec<views::MemberRow> = members
-        .iter()
-        .map(|m| views::MemberRow {
-            id: m.id,
-            name: m.name.clone(),
-            is_owner: m.is_owner,
-        })
-        .collect();
     GroupView {
         group,
         me,
         join_url,
-        members: member_rows,
+        members: member_rows(members),
         balances: ledger.balances,
         transfers: ledger.transfers,
         expenses: ledger.expenses,
@@ -566,14 +556,7 @@ pub async fn edit_expense_page(
     }
 
     let members = db::list_members(&st.pool, &gid).await?;
-    let member_rows: Vec<views::MemberRow> = members
-        .iter()
-        .map(|m| views::MemberRow {
-            id: m.id,
-            name: m.name.clone(),
-            is_owner: m.is_owner,
-        })
-        .collect();
+    let member_rows = member_rows(&members);
     let shares = db::expense_shares(&st.pool, eid).await?;
     Ok(views::edit_expense_page(
         &group,
