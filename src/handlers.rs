@@ -429,7 +429,6 @@ pub async fn join_group(
     }
     let token = ids::device_token();
     db::insert_member(&st.pool, &group.id, name, &ids::hash_token(&token)).await?;
-    db::touch_group(&st.pool, &gid).await?;
     let jar = set_token_cookie(jar, &gid, &token, st.secure_cookies);
     Ok((jar, Redirect::to(&format!("/g/{gid}"))))
 }
@@ -625,8 +624,7 @@ pub async fn delete_expense(
     if payer_id != me.id && !me.is_owner {
         return Err(AppError::Forbidden);
     }
-    db::soft_delete_expense(&st.pool, eid).await?;
-    db::touch_group(&st.pool, &gid).await?;
+    db::soft_delete_expense(&st.pool, &gid, eid).await?;
     Ok(back)
 }
 
@@ -678,7 +676,6 @@ pub async fn mark_settlement(
         return Ok(back);
     }
     db::insert_settlement(&st.pool, &gid, form.from_id, form.to_id, amount).await?;
-    db::touch_group(&st.pool, &gid).await?;
     Ok(back)
 }
 
@@ -1391,11 +1388,14 @@ mod tests {
             your_name: "Alice".into(),
             currency: Some("eur".into()),
         };
-        let (jar, redirect) =
-            create_group(State(state(pool.clone())), CookieJar::new(), axum::Form(form))
-                .await
-                .map_err(|_| "create should not error")
-                .unwrap();
+        let (jar, redirect) = create_group(
+            State(state(pool.clone())),
+            CookieJar::new(),
+            axum::Form(form),
+        )
+        .await
+        .map_err(|_| "create should not error")
+        .unwrap();
 
         let (gid, name, currency): (String, String, String) =
             sqlx::query_as("SELECT id, name, currency FROM groups")
@@ -1432,7 +1432,9 @@ mod tests {
             State(state(pool.clone())),
             Path(gid.clone()),
             CookieJar::new(),
-            axum::Form(JoinForm { name: "Dave".into() }),
+            axum::Form(JoinForm {
+                name: "Dave".into(),
+            }),
         )
         .await
         .map_err(|_| "join should not error")
@@ -1648,6 +1650,76 @@ mod tests {
         assert!(!is_closed(&pool, &gid).await, "the group stays open");
     }
 
+    async fn last_active(pool: &SqlitePool, gid: &str) -> String {
+        sqlx::query_scalar("SELECT last_active FROM groups WHERE id = ?")
+            .bind(gid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Push `last_active` a day into the past so a subsequent bump (or its absence) is
+    /// unambiguous — avoids comparing two same-second `datetime('now')` values.
+    async fn backdate(pool: &SqlitePool, gid: &str) {
+        sqlx::query("UPDATE groups SET last_active = datetime('now', '-1 day') WHERE id = ?")
+            .bind(gid)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_group_does_not_bump_last_active() {
+        // Closing an unclaimed group must NOT reset its expiry clock: a wound-down
+        // throwaway should still expire ~INACTIVE_DAYS after its last *real* activity,
+        // not from the moment it was closed.
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        backdate(&pool, &gid).await;
+        let before = last_active(&pool, &gid).await;
+        let _ = close_group(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            last_active(&pool, &gid).await,
+            before,
+            "close leaves last_active untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_expense_bumps_last_active() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        backdate(&pool, &gid).await;
+        let before = last_active(&pool, &gid).await;
+        let _ = delete_expense(
+            State(state(pool.clone())),
+            Path((gid.clone(), eid)),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            last_active(&pool, &gid).await,
+            before,
+            "a delete counts as activity and bumps last_active"
+        );
+    }
+
     async fn owner_token_hash(pool: &SqlitePool, gid: &str) -> String {
         sqlx::query_scalar("SELECT token_hash FROM members WHERE group_id = ? AND is_owner = 1")
             .bind(gid)
@@ -1709,7 +1781,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(resp.status().is_redirection(), "correct passphrase lets you in");
+        assert!(
+            resp.status().is_redirection(),
+            "correct passphrase lets you in"
+        );
         assert_ne!(
             owner_token_hash(&pool, &gid).await,
             old_hash,

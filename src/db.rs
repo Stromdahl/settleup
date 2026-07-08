@@ -69,11 +69,29 @@ pub async fn connect(path: &str) -> Result<SqlitePool, sqlx::Error> {
     Ok(pool)
 }
 
-/// Bump a group's last-active timestamp so it survives auto-expiry.
-pub async fn touch_group(pool: &SqlitePool, group_id: &str) -> Result<(), sqlx::Error> {
+/// Bump a group's last-active timestamp so it survives auto-expiry. Test-only since all
+/// production writes bump `last_active` in-transaction via [`bump_last_active`]; tests
+/// still use it to simulate activity after inserting rows directly.
+#[cfg(test)]
+pub(crate) async fn touch_group(pool: &SqlitePool, group_id: &str) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
         .bind(group_id)
         .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// The same `last_active` bump as [`touch_group`], but inside a transaction so a data
+/// write and its activity stamp commit atomically. Every mutating write that counts as
+/// group activity funnels through here; the deliberate non-bumpers (create, close,
+/// recovery) simply don't call it.
+async fn bump_last_active(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    group_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
+        .bind(group_id)
+        .execute(&mut **tx)
         .await?;
     Ok(())
 }
@@ -105,23 +123,26 @@ pub async fn create_group_with_owner(
     Ok(())
 }
 
-/// Insert a non-owner member. Callers bump `last_active` separately (see [`touch_group`]).
+/// Insert a non-owner member, bumping the group's `last_active` in the same transaction.
 pub async fn insert_member(
     pool: &SqlitePool,
     group_id: &str,
     name: &str,
     token_hash: &str,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO members (group_id, name, token_hash, is_owner) VALUES (?, ?, ?, 0)")
         .bind(group_id)
         .bind(name)
         .bind(token_hash)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    bump_last_active(&mut tx, group_id).await?;
+    tx.commit().await?;
     Ok(())
 }
 
-/// Record a settlement transfer. Callers bump `last_active` separately (see [`touch_group`]).
+/// Record a settlement transfer, bumping the group's `last_active` in the same transaction.
 pub async fn insert_settlement(
     pool: &SqlitePool,
     group_id: &str,
@@ -129,13 +150,16 @@ pub async fn insert_settlement(
     to_id: i64,
     amount: i64,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO settlements (group_id, from_id, to_id, amount) VALUES (?, ?, ?, ?)")
         .bind(group_id)
         .bind(from_id)
         .bind(to_id)
         .bind(amount)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    bump_last_active(&mut tx, group_id).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -377,10 +401,7 @@ pub async fn insert_expense_with_shares(
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
-        .bind(group_id)
-        .execute(&mut *tx)
-        .await?;
+    bump_last_active(&mut tx, group_id).await?;
     tx.commit().await?;
     Ok(eid)
 }
@@ -416,21 +437,25 @@ pub async fn update_expense_with_shares(
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
-        .bind(group_id)
-        .execute(&mut *tx)
-        .await?;
+    bump_last_active(&mut tx, group_id).await?;
     tx.commit().await?;
     Ok(())
 }
 
-/// Soft-delete an expense (sets `deleted_at`). Does not touch `last_active` — the caller
-/// does that separately (see [`touch_group`]).
-pub async fn soft_delete_expense(pool: &SqlitePool, expense_id: i64) -> Result<(), sqlx::Error> {
+/// Soft-delete an expense (sets `deleted_at`), bumping the group's `last_active` in the
+/// same transaction.
+pub async fn soft_delete_expense(
+    pool: &SqlitePool,
+    group_id: &str,
+    expense_id: i64,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query("UPDATE expenses SET deleted_at = datetime('now') WHERE id = ?")
         .bind(expense_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    bump_last_active(&mut tx, group_id).await?;
+    tx.commit().await?;
     Ok(())
 }
 
