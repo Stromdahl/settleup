@@ -455,17 +455,21 @@ pub async fn join_group(
 
 // --- Add / edit / delete expense ------------------------------------------------
 
-/// Parse the dynamic add/edit expense form body into `(payer_id, description, shares)`,
-/// or `None` if the submission is invalid: unknown payer, empty description, no
-/// participating shares, or a non-positive total. Shared by [`add_expense`] and
-/// [`edit_expense`] so their parsing and validation can't drift.
+/// A validated expense submission: `(payer_id, description, shares)`, where `shares` is
+/// `(member_id, amount)` in öre.
+type ExpenseInput = (i64, String, Vec<(i64, i64)>);
+
+/// Parse the dynamic add/edit expense form body into an [`ExpenseInput`], or `None` if the
+/// submission is invalid: unknown payer, empty description, no participating shares, or a
+/// non-positive total. Shared by [`add_expense`] and [`edit_expense`] so their parsing and
+/// validation can't drift.
 ///
 /// `equal` split reads the `inc_<id>` checkboxes and the single `amount`; `exact` reads
 /// each `amt_<id>` field. Unknown member ids are ignored.
 fn parse_expense_form(
     body: &str,
     member_ids: &std::collections::HashSet<i64>,
-) -> Option<(i64, String, Vec<(i64, i64)>)> {
+) -> Option<ExpenseInput> {
     let fields: Vec<(String, String)> = serde_urlencoded::from_str(body).unwrap_or_default();
     let get = |key: &str| {
         fields
@@ -1203,6 +1207,298 @@ mod tests {
         assert_eq!(
             resp.headers().get("location").unwrap(),
             &format!("/g/{gid}")
+        );
+    }
+
+    // --- Edit expense (GET/POST /g/{id}/expenses/{eid}/edit) ----------------------
+
+    /// Insert an extra member with a known raw device token; returns their id.
+    async fn add_member(pool: &SqlitePool, gid: &str, name: &str, token: &str) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO members (group_id, name, token_hash) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind(gid)
+        .bind(name)
+        .bind(ids::hash_token(token))
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The id of the group's single live expense.
+    async fn only_expense_id(pool: &SqlitePool, gid: &str) -> i64 {
+        sqlx::query_scalar("SELECT id FROM expenses WHERE group_id = ? AND deleted_at IS NULL")
+            .bind(gid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Add one expense (as Alice) via the real handler and return its id.
+    async fn seed(pool: &SqlitePool, gid: &str, token: &str, body: String) -> i64 {
+        let _ = add_expense(
+            State(state(pool.clone())),
+            Path(gid.to_string()),
+            auth_jar(gid, token),
+            body,
+        )
+        .await
+        .map_err(|_| "seeding an expense should not error")
+        .unwrap();
+        only_expense_id(pool, gid).await
+    }
+
+    async fn do_edit(pool: &SqlitePool, gid: &str, eid: i64, token: &str, body: String) {
+        let _ = edit_expense(
+            State(state(pool.clone())),
+            Path((gid.to_string(), eid)),
+            auth_jar(gid, token),
+            body,
+        )
+        .await
+        .map_err(|_| "edit should not error")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn edit_rewrites_shares_and_total_in_place() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        // Seed: Alice pays 90.00 split equally three ways.
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+
+        // Edit → exact amounts: Bob owes 60.00, Cara owes 30.00, Alice out.
+        do_edit(
+            &pool,
+            &gid,
+            eid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner+fixed&method=exact&amt_{bob}=60&amt_{cara}=30"
+            ),
+        )
+        .await;
+
+        let (amount, shares) = persisted(&pool, &gid).await;
+        assert_eq!(shares, vec![(bob, 6000), (cara, 3000)]);
+        assert_eq!(amount, 9000, "stored total tracks the re-split shares");
+        assert_eq!(
+            expense_count(&pool, &gid).await,
+            1,
+            "an edit updates in place — no delete-and-re-add"
+        );
+        let desc: String = sqlx::query_scalar("SELECT description FROM expenses WHERE id = ?")
+            .bind(eid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(desc, "Dinner fixed");
+    }
+
+    #[tokio::test]
+    async fn edit_folds_in_a_member_who_was_not_in_the_original_split() {
+        // The headline "rebalance when new people join" case: a round logged before
+        // someone was part of it, re-split to include them via an edit.
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        // Alice pays 100.00, split equally between Alice and Bob only.
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!("payer_id={alice}&description=Round&method=equal&amount=100&inc_{alice}=on&inc_{bob}=on"),
+        )
+        .await;
+        assert_eq!(
+            persisted(&pool, &gid).await.1,
+            vec![(alice, 5000), (bob, 5000)]
+        );
+
+        // Cara is pulled into the round: re-split equally three ways.
+        do_edit(
+            &pool,
+            &gid,
+            eid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Round&method=equal&amount=100&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+
+        let (amount, shares) = persisted(&pool, &gid).await;
+        assert_eq!(shares, vec![(alice, 3334), (bob, 3333), (cara, 3333)]);
+        assert_eq!(amount, 10000);
+    }
+
+    #[tokio::test]
+    async fn owner_may_edit_another_members_expense() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        // Expense paid by Bob (Alice, the owner, records it).
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={bob}&description=Cab&method=equal&amount=60&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        // Alice (owner, not the payer) re-splits it across everyone.
+        do_edit(
+            &pool,
+            &gid,
+            eid,
+            &token,
+            format!(
+                "payer_id={bob}&description=Cab&method=equal&amount=60&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        let (amount, shares) = persisted(&pool, &gid).await;
+        assert_eq!(amount, 6000);
+        assert_eq!(
+            shares.len(),
+            3,
+            "the owner re-split across the whole roster"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_forbidden_for_non_payer_non_owner() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        add_member(&pool, &gid, "Dave", "dave-token").await;
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        // Dave is neither the payer nor the owner.
+        let res = edit_expense(
+            State(state(pool.clone())),
+            Path((gid.clone(), eid)),
+            auth_jar(&gid, "dave-token"),
+            format!("payer_id={alice}&description=Hacked&method=exact&amt_{alice}=1"),
+        )
+        .await;
+        assert!(res.is_err(), "only the payer or owner may edit");
+        assert_eq!(
+            persisted(&pool, &gid).await.0,
+            9000,
+            "a rejected edit changes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_on_closed_group_persists_nothing() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        sqlx::query("UPDATE groups SET closed_at = datetime('now') WHERE id = ?")
+            .bind(&gid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Handler returns a plain redirect but must not mutate.
+        do_edit(
+            &pool,
+            &gid,
+            eid,
+            &token,
+            format!("payer_id={alice}&description=Changed&method=exact&amt_{bob}=1"),
+        )
+        .await;
+        assert_eq!(
+            persisted(&pool, &gid).await.0,
+            9000,
+            "a closed group must not accept edits"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_page_prefills_the_stored_expense() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        // Exact split: Bob 80.00, Cara 40.50, Alice out.
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Nachos&method=exact&amt_{bob}=80&amt_{cara}=40.50"
+            ),
+        )
+        .await;
+        let resp = edit_expense_page(
+            State(state(pool.clone())),
+            Path((gid.clone(), eid)),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .map_err(|_| "the payer should see the edit form")
+        .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let out = body_string(resp).await;
+        assert!(out.contains("Edit expense"), "has the edit heading");
+        assert!(
+            out.contains(&format!(r#"action="/g/{gid}/expenses/{eid}/edit""#)),
+            "posts back to the edit endpoint"
+        );
+        assert!(
+            out.contains(r#"value="Nachos""#),
+            "description is prefilled"
+        );
+        assert!(
+            out.contains(r#"value="80.00""#) && out.contains(r#"value="40.50""#),
+            "each stored share amount is prefilled"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_page_forbidden_for_non_manager() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        add_member(&pool, &gid, "Dave", "dave-token").await;
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        let res = edit_expense_page(
+            State(state(pool.clone())),
+            Path((gid.clone(), eid)),
+            auth_jar(&gid, "dave-token"),
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "a non-payer non-owner cannot open the edit form"
         );
     }
 
