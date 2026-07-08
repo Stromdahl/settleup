@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use crate::db;
 use crate::ids;
-use crate::money::parse_amount;
+use crate::money::{MAX_AMOUNT_ORE, parse_amount};
 use crate::settle::{self, equal_shares};
 use crate::views::{self, GroupView};
 
@@ -500,8 +500,10 @@ fn parse_expense_form(
         equal_shares(total, &included)
     };
 
-    let total: i64 = shares.iter().map(|(_, a)| a).sum();
-    if shares.is_empty() || total <= 0 || description.is_empty() {
+    let total = shares
+        .iter()
+        .try_fold(0i64, |acc, (_, a)| acc.checked_add(*a))?;
+    if shares.is_empty() || total <= 0 || total > MAX_AMOUNT_ORE || description.is_empty() {
         return None;
     }
     Some((payer_id, description, shares))
@@ -933,7 +935,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_inputs_persist_nothing() {
         let pool = db::memory_pool().await;
-        let (gid, [alice, bob, _cara], token) = group_with_three(&pool).await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
         let send = |body: String| {
             let (p, g, t) = (pool.clone(), gid.clone(), token.clone());
             async move { add_expense(State(state(p)), Path(g.clone()), auth_jar(&g, &t), body).await }
@@ -962,6 +964,11 @@ mod tests {
         // Payer isn't a member of the group.
         let _ = send(format!(
             "payer_id=999999&description=X&method=equal&amount=50&inc_{alice}=on"
+        ))
+        .await;
+        // Exact split whose shares each sit at the cap but sum past it.
+        let _ = send(format!(
+            "payer_id={alice}&description=X&method=exact&amt_{bob}=1000000000&amt_{cara}=1000000000"
         ))
         .await;
 

@@ -2,9 +2,13 @@
 //! floating-point rounding error. These helpers convert to/from the decimal string
 //! a human types or reads.
 
+/// Largest accepted amount in öre (1,000,000,000.00) — keeps expense/share sums well within i64.
+pub const MAX_AMOUNT_ORE: i64 = 100_000_000_000;
+
 /// Parse a user-entered amount into minor units (öre). Accepts `.` or `,` as the
-/// decimal separator (Swedish keyboards use `,`). Returns None on garbage or a
-/// negative value. Truncates beyond two decimals.
+/// decimal separator (Swedish keyboards use `,`). Returns None on garbage, a
+/// negative value, overflow, or an amount above `MAX_AMOUNT_ORE`. Truncates
+/// beyond two decimals.
 pub fn parse_amount(s: &str) -> Option<i64> {
     let s = s.trim().replace(',', ".");
     if s.is_empty() {
@@ -24,7 +28,11 @@ pub fn parse_amount(s: &str) -> Option<i64> {
         1 => frac_part.parse::<i64>().ok()? * 10,
         _ => frac_part.get(..2)?.parse::<i64>().ok()?,
     };
-    Some(major * 100 + frac)
+    let amount = major.checked_mul(100)?.checked_add(frac)?;
+    if amount > MAX_AMOUNT_ORE {
+        return None;
+    }
+    Some(amount)
 }
 
 /// Render minor units (öre) as a plain decimal string, e.g. `12550` -> `"125.50"`.
@@ -55,6 +63,17 @@ mod tests {
         assert_eq!(parse_amount(""), None);
         assert_eq!(parse_amount("abc"), None);
         assert_eq!(parse_amount("-5"), None);
+    }
+
+    #[test]
+    fn rejects_overflow_and_over_cap() {
+        // Parses as i64 but `* 100` overflows: must be rejected, not wrap/panic.
+        assert_eq!(parse_amount("184467440737095517"), None);
+        // Valid, non-overflowing, but above the accepted cap.
+        assert_eq!(parse_amount("1000000000.01"), None);
+        assert_eq!(parse_amount("9999999999999"), None);
+        // The exact cap is still accepted.
+        assert_eq!(parse_amount("1000000000"), Some(MAX_AMOUNT_ORE));
     }
 
     #[test]
