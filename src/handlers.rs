@@ -545,30 +545,7 @@ pub async fn add_expense(
     };
     let total: i64 = shares.iter().map(|(_, a)| a).sum();
 
-    let mut tx = st.pool.begin().await?;
-    let eid: i64 = sqlx::query_scalar(
-        "INSERT INTO expenses (group_id, payer_id, amount, description)
-         VALUES (?, ?, ?, ?) RETURNING id",
-    )
-    .bind(&gid)
-    .bind(payer_id)
-    .bind(total)
-    .bind(&description)
-    .fetch_one(&mut *tx)
-    .await?;
-    for (mid, amt) in &shares {
-        sqlx::query("INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, ?)")
-            .bind(eid)
-            .bind(mid)
-            .bind(amt)
-            .execute(&mut *tx)
-            .await?;
-    }
-    sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
-        .bind(&gid)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
+    db::insert_expense_with_shares(&st.pool, &gid, payer_id, total, &description, &shares).await?;
     Ok(back)
 }
 
@@ -589,15 +566,8 @@ pub async fn edit_expense_page(
     if group.is_closed() {
         return Ok(Redirect::to(&format!("/g/{gid}")).into_response());
     }
-    let row: Option<(i64, i64, String)> = sqlx::query_as(
-        "SELECT payer_id, amount, description
-         FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL",
-    )
-    .bind(eid)
-    .bind(&gid)
-    .fetch_optional(&st.pool)
-    .await?;
-    let Some((payer_id, amount, description)) = row else {
+    let Some((payer_id, amount, description)) = db::expense_edit_row(&st.pool, &gid, eid).await?
+    else {
         return Ok(Redirect::to(&format!("/g/{gid}")).into_response());
     };
     if payer_id != me.id && !me.is_owner {
@@ -613,12 +583,7 @@ pub async fn edit_expense_page(
             is_owner: m.is_owner,
         })
         .collect();
-    let shares: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT member_id, amount FROM expense_shares WHERE expense_id = ? ORDER BY member_id",
-    )
-    .bind(eid)
-    .fetch_all(&st.pool)
-    .await?;
+    let shares = db::expense_shares(&st.pool, eid).await?;
     Ok(views::edit_expense_page(
         &group,
         &member_rows,
@@ -651,14 +616,7 @@ pub async fn edit_expense(
         return Ok(back);
     }
     // Expense must exist in this group; permission = original payer or owner.
-    let payer: Option<(i64,)> = sqlx::query_as(
-        "SELECT payer_id FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL",
-    )
-    .bind(eid)
-    .bind(&gid)
-    .fetch_optional(&st.pool)
-    .await?;
-    let Some((orig_payer,)) = payer else {
+    let Some(orig_payer) = db::expense_payer(&st.pool, &gid, eid).await? else {
         return Ok(back);
     };
     if orig_payer != me.id && !me.is_owner {
@@ -672,31 +630,8 @@ pub async fn edit_expense(
     };
     let total: i64 = shares.iter().map(|(_, a)| a).sum();
 
-    let mut tx = st.pool.begin().await?;
-    sqlx::query("UPDATE expenses SET payer_id = ?, amount = ?, description = ? WHERE id = ?")
-        .bind(payer_id)
-        .bind(total)
-        .bind(&description)
-        .bind(eid)
-        .execute(&mut *tx)
+    db::update_expense_with_shares(&st.pool, &gid, eid, payer_id, total, &description, &shares)
         .await?;
-    sqlx::query("DELETE FROM expense_shares WHERE expense_id = ?")
-        .bind(eid)
-        .execute(&mut *tx)
-        .await?;
-    for (mid, amt) in &shares {
-        sqlx::query("INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, ?)")
-            .bind(eid)
-            .bind(mid)
-            .bind(amt)
-            .execute(&mut *tx)
-            .await?;
-    }
-    sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
-        .bind(&gid)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
     Ok(back)
 }
 
@@ -710,23 +645,13 @@ pub async fn delete_expense(
         .ok_or(AppError::Forbidden)?;
     let back = Redirect::to(&format!("/g/{gid}"));
     // Only the payer or the owner may delete.
-    let payer: Option<(i64,)> = sqlx::query_as(
-        "SELECT payer_id FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL",
-    )
-    .bind(eid)
-    .bind(&gid)
-    .fetch_optional(&st.pool)
-    .await?;
-    let Some((payer_id,)) = payer else {
+    let Some(payer_id) = db::expense_payer(&st.pool, &gid, eid).await? else {
         return Ok(back);
     };
     if payer_id != me.id && !me.is_owner {
         return Err(AppError::Forbidden);
     }
-    sqlx::query("UPDATE expenses SET deleted_at = datetime('now') WHERE id = ?")
-        .bind(eid)
-        .execute(&st.pool)
-        .await?;
+    db::soft_delete_expense(&st.pool, eid).await?;
     db::touch_group(&st.pool, &gid).await?;
     Ok(back)
 }

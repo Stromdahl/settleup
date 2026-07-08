@@ -192,6 +192,140 @@ pub async fn settlement_rows(
     .await
 }
 
+/// The `(member_id, amount)` shares for a single expense, ordered by member id — used
+/// to prefill the edit form.
+pub async fn expense_shares(
+    pool: &SqlitePool,
+    expense_id: i64,
+) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+    sqlx::query_as::<_, (i64, i64)>(
+        "SELECT member_id, amount FROM expense_shares WHERE expense_id = ? ORDER BY member_id",
+    )
+    .bind(expense_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// The payer of a live expense in a group, or `None` if it doesn't exist / was deleted.
+/// Used to authorize edit/delete.
+pub async fn expense_payer(
+    pool: &SqlitePool,
+    group_id: &str,
+    expense_id: i64,
+) -> Result<Option<i64>, sqlx::Error> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT payer_id FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL",
+    )
+    .bind(expense_id)
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(p,)| p))
+}
+
+/// The `(payer_id, amount, description)` of a live expense, or `None` if it doesn't
+/// exist / was deleted. Used to prefill the edit form.
+pub async fn expense_edit_row(
+    pool: &SqlitePool,
+    group_id: &str,
+    expense_id: i64,
+) -> Result<Option<(i64, i64, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT payer_id, amount, description
+         FROM expenses WHERE id = ? AND group_id = ? AND deleted_at IS NULL",
+    )
+    .bind(expense_id)
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Insert a new expense with its share snapshot and bump the group's `last_active`, all
+/// in one transaction. Returns the new expense id. `total` must equal Σ`shares`.
+pub async fn insert_expense_with_shares(
+    pool: &SqlitePool,
+    group_id: &str,
+    payer_id: i64,
+    total: i64,
+    description: &str,
+    shares: &[(i64, i64)],
+) -> Result<i64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let eid: i64 = sqlx::query_scalar(
+        "INSERT INTO expenses (group_id, payer_id, amount, description)
+         VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .bind(group_id)
+    .bind(payer_id)
+    .bind(total)
+    .bind(description)
+    .fetch_one(&mut *tx)
+    .await?;
+    for (mid, amt) in shares {
+        sqlx::query("INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, ?)")
+            .bind(eid)
+            .bind(mid)
+            .bind(amt)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(eid)
+}
+
+/// Rewrite an expense's payer/total/description and replace its share snapshot, bumping
+/// the group's `last_active`, all in one transaction. `total` must equal Σ`shares`.
+pub async fn update_expense_with_shares(
+    pool: &SqlitePool,
+    group_id: &str,
+    expense_id: i64,
+    payer_id: i64,
+    total: i64,
+    description: &str,
+    shares: &[(i64, i64)],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE expenses SET payer_id = ?, amount = ?, description = ? WHERE id = ?")
+        .bind(payer_id)
+        .bind(total)
+        .bind(description)
+        .bind(expense_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM expense_shares WHERE expense_id = ?")
+        .bind(expense_id)
+        .execute(&mut *tx)
+        .await?;
+    for (mid, amt) in shares {
+        sqlx::query("INSERT INTO expense_shares (expense_id, member_id, amount) VALUES (?, ?, ?)")
+            .bind(expense_id)
+            .bind(mid)
+            .bind(amt)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE groups SET last_active = datetime('now') WHERE id = ?")
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Soft-delete an expense (sets `deleted_at`). Does not touch `last_active` — the caller
+/// does that separately (see [`touch_group`]).
+pub async fn soft_delete_expense(pool: &SqlitePool, expense_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE expenses SET deleted_at = datetime('now') WHERE id = ?")
+        .bind(expense_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// The member ids included in a given expense (for display).
 pub async fn expense_participants(
     pool: &SqlitePool,
