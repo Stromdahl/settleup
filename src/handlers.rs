@@ -29,6 +29,7 @@ pub struct AppState {
 
 // --- Error handling -------------------------------------------------------------
 
+#[derive(Debug)]
 pub enum AppError {
     NotFound,
     Forbidden,
@@ -1424,6 +1425,379 @@ mod tests {
         assert!(
             res.is_err(),
             "a non-payer non-owner cannot open the edit form"
+        );
+    }
+
+    // --- Group create / join ------------------------------------------------------
+
+    #[tokio::test]
+    async fn create_group_persists_group_and_owner_and_sets_cookie() {
+        let pool = db::memory_pool().await;
+        let form = CreateForm {
+            name: "  Trip  ".into(),
+            your_name: "Alice".into(),
+            currency: Some("eur".into()),
+        };
+        let (jar, redirect) =
+            create_group(State(state(pool.clone())), CookieJar::new(), axum::Form(form))
+                .await
+                .map_err(|_| "create should not error")
+                .unwrap();
+
+        let (gid, name, currency): (String, String, String) =
+            sqlx::query_as("SELECT id, name, currency FROM groups")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (name.as_str(), currency.as_str()),
+            ("Trip", "EUR"),
+            "name trimmed, currency uppercased"
+        );
+        let (owner_name, is_owner): (String, i64) =
+            sqlx::query_as("SELECT name, is_owner FROM members WHERE group_id = ?")
+                .bind(&gid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((owner_name.as_str(), is_owner), ("Alice", 1));
+        assert!(
+            jar.get(&ids::cookie_name(&gid)).is_some(),
+            "the owner's device cookie is set"
+        );
+        assert_eq!(
+            redirect.into_response().headers().get("location").unwrap(),
+            &format!("/g/{gid}")
+        );
+    }
+
+    #[tokio::test]
+    async fn join_group_adds_member_and_sets_cookie() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, _token) = group_with_three(&pool).await;
+        let (jar, _r) = join_group(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            CookieJar::new(),
+            axum::Form(JoinForm { name: "Dave".into() }),
+        )
+        .await
+        .map_err(|_| "join should not error")
+        .unwrap();
+        let dave: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM members WHERE group_id = ? AND name = 'Dave' AND is_owner = 0",
+        )
+        .bind(&gid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(dave, 1, "a new non-owner member is inserted");
+        assert!(
+            jar.get(&ids::cookie_name(&gid)).is_some(),
+            "the joiner's device cookie is set"
+        );
+    }
+
+    // --- Delete expense -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn delete_expense_soft_deletes_for_payer() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        let _ = delete_expense(
+            State(state(pool.clone())),
+            Path((gid.clone(), eid)),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .map_err(|_| "delete should not error")
+        .unwrap();
+        assert_eq!(
+            expense_count(&pool, &gid).await,
+            1,
+            "the row remains — delete is a soft delete"
+        );
+        let live: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM expenses WHERE group_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&gid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(live, 0, "but it no longer counts as live");
+    }
+
+    #[tokio::test]
+    async fn delete_expense_forbidden_for_non_payer_non_owner() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        add_member(&pool, &gid, "Dave", "dave-token").await;
+        let eid = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        let res = delete_expense(
+            State(state(pool.clone())),
+            Path((gid.clone(), eid)),
+            auth_jar(&gid, "dave-token"),
+        )
+        .await;
+        assert!(res.is_err(), "only the payer or owner may delete");
+        let live: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM expenses WHERE group_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&gid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(live, 1, "a rejected delete changes nothing");
+    }
+
+    // --- Settlements --------------------------------------------------------------
+
+    /// The single settlement amount recorded for a group.
+    async fn only_settlement_amount(pool: &SqlitePool, gid: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT amount FROM settlements WHERE group_id = ?")
+            .bind(gid)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mark_settlement_clamps_to_outstanding_debt() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, cara], token) = group_with_three(&pool).await;
+        // Alice pays 90.00 split three ways → Bob owes her 30.00.
+        let _ = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on&inc_{cara}=on"
+            ),
+        )
+        .await;
+        // Bob offers 100.00; it must clamp to the 30.00 he actually owes.
+        let _ = mark_settlement(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            axum::Form(SettlementForm {
+                from_id: bob,
+                to_id: alice,
+                amount_ore: 10000,
+            }),
+        )
+        .await
+        .map_err(|_| "settlement should not error")
+        .unwrap();
+        assert_eq!(
+            only_settlement_amount(&pool, &gid).await,
+            Some(3000),
+            "clamped to Bob's 30.00 debt"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_settlement_rejects_self_and_nonmembers() {
+        let pool = db::memory_pool().await;
+        let (gid, [alice, bob, _cara], token) = group_with_three(&pool).await;
+        let _ = seed(
+            &pool,
+            &gid,
+            &token,
+            format!(
+                "payer_id={alice}&description=Dinner&method=equal&amount=90&inc_{alice}=on&inc_{bob}=on"
+            ),
+        )
+        .await;
+        // Same person on both sides, and an id that isn't in the group.
+        for (from_id, to_id) in [(alice, alice), (bob, 999_999)] {
+            let _ = mark_settlement(
+                State(state(pool.clone())),
+                Path(gid.clone()),
+                auth_jar(&gid, &token),
+                axum::Form(SettlementForm {
+                    from_id,
+                    to_id,
+                    amount_ore: 1000,
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            only_settlement_amount(&pool, &gid).await,
+            None,
+            "neither a self-transfer nor a non-member settles"
+        );
+    }
+
+    // --- Close / reopen / recovery ------------------------------------------------
+
+    async fn is_closed(pool: &SqlitePool, gid: &str) -> bool {
+        db::load_group(pool, gid)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_closed()
+    }
+
+    #[tokio::test]
+    async fn close_then_reopen_toggles_closed_state() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        let _ = close_group(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .unwrap();
+        assert!(is_closed(&pool, &gid).await, "closed after close");
+        let _ = reopen_group(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+        )
+        .await
+        .unwrap();
+        assert!(!is_closed(&pool, &gid).await, "open again after reopen");
+    }
+
+    #[tokio::test]
+    async fn close_group_forbidden_for_non_owner() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, _token) = group_with_three(&pool).await;
+        add_member(&pool, &gid, "Dave", "dave-token").await;
+        let res = close_group(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, "dave-token"),
+        )
+        .await;
+        assert!(res.is_err(), "only the owner may close");
+        assert!(!is_closed(&pool, &gid).await, "the group stays open");
+    }
+
+    async fn owner_token_hash(pool: &SqlitePool, gid: &str) -> String {
+        sqlx::query_scalar("SELECT token_hash FROM members WHERE group_id = ? AND is_owner = 1")
+            .bind(gid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn set_recovery_stores_trimmed_hashed_passphrase() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        let _ = set_recovery(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            axum::Form(RecoveryForm {
+                passphrase: "  hunter2 ".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let stored: Option<String> = sqlx::query_scalar("SELECT recovery FROM groups WHERE id = ?")
+            .bind(&gid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored,
+            Some(ids::hash_token("hunter2")),
+            "passphrase is trimmed then hashed"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_submit_rotates_owner_token_on_correct_passphrase() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        let _ = set_recovery(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            axum::Form(RecoveryForm {
+                passphrase: "hunter2".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let old_hash = owner_token_hash(&pool, &gid).await;
+
+        // Correct passphrase from a fresh device → redirect in and rotate the token.
+        let resp = recover_submit(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            CookieJar::new(),
+            axum::Form(RecoveryForm {
+                passphrase: "hunter2".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(resp.status().is_redirection(), "correct passphrase lets you in");
+        assert_ne!(
+            owner_token_hash(&pool, &gid).await,
+            old_hash,
+            "the owner's device token is rotated onto the new device"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_submit_rejects_wrong_passphrase() {
+        let pool = db::memory_pool().await;
+        let (gid, _ids, token) = group_with_three(&pool).await;
+        let _ = set_recovery(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            auth_jar(&gid, &token),
+            axum::Form(RecoveryForm {
+                passphrase: "hunter2".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let old_hash = owner_token_hash(&pool, &gid).await;
+        let resp = recover_submit(
+            State(state(pool.clone())),
+            Path(gid.clone()),
+            CookieJar::new(),
+            axum::Form(RecoveryForm {
+                passphrase: "wrong".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "a wrong passphrase just re-renders the form"
+        );
+        assert_eq!(
+            owner_token_hash(&pool, &gid).await,
+            old_hash,
+            "and rotates nothing"
         );
     }
 
