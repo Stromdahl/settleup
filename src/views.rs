@@ -186,6 +186,7 @@ select{appearance:none;-webkit-appearance:none;padding-right:40px;background-rep
   border:solid #ffffff;border-width:0 3px 3px 0;transform:rotate(45deg);}
 .chk:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(63,111,229,.45);}
 .share-row input[type=text]{width:96px;flex:none;padding:9px 10px;font-size:15px;text-align:right;border-radius:10px;}
+.share-row input[type=text][readonly]{background:var(--surface-2);color:var(--muted);cursor:default;}
 .share-hint{font-size:13px;color:var(--soft);margin:-2px 0 10px;}
 
 /* ---- note / owner card ---- */
@@ -245,6 +246,61 @@ input.total-in:focus{outline:none;box-shadow:none;border:0;}
 /// link is still shown and selectable, so nothing depends on this.
 const INLINE_JS: &str = r#"document.addEventListener('click',function(e){var b=e.target.closest('[data-copy]');if(!b)return;e.preventDefault();var t=b.getAttribute('data-copy');if(navigator.clipboard){navigator.clipboard.writeText(t).then(function(){var s=b.querySelector('.copy-label')||b;var o=s.textContent;s.textContent='Copied';setTimeout(function(){s.textContent=o;},1200);});}});
 document.addEventListener('click',function(e){var d=e.target.closest('[data-dismiss]');if(!d)return;var n=d.closest(d.getAttribute('data-dismiss'));if(n)n.remove();});"#;
+
+// Live preview of the equal ("balanced") split on the add/edit expense form. In equal
+// mode the per-person amount fields are derived (the server splits `amount` across the
+// ticked members and ignores the `amt_` fields), so we render them read-only and keep
+// them in sync as the total, the checkboxes, or the split method change. This mirrors
+// `settle::equal_shares` exactly — integer öre, leftover öre handed one at a time to the
+// lowest member ids (the server sorts included ids before splitting) — so the preview
+// matches what gets saved. Pure progressive enhancement: no-JS still submits correctly.
+const FORM_JS: &str = r#"
+(function(){
+  function parseOre(s){
+    s=(s||'').replace(/^\s+|\s+$/g,'').replace(',', '.');
+    if(s==='')return null;
+    var dot=s.indexOf('.'), ip, fp;
+    if(dot<0){ip=s;fp='';}else{ip=s.slice(0,dot);fp=s.slice(dot+1);}
+    if(ip==='')ip='0';
+    if(!/^\d+$/.test(ip))return null;
+    var frac=0;
+    if(fp.length===1){if(!/^\d$/.test(fp))return null;frac=parseInt(fp,10)*10;}
+    else if(fp.length>=2){var f2=fp.slice(0,2);if(!/^\d\d$/.test(f2))return null;frac=parseInt(f2,10);}
+    return parseInt(ip,10)*100+frac;
+  }
+  function fmtOre(o){var sg=o<0?'-':'';o=Math.abs(o);var m=o%100;return sg+Math.floor(o/100)+'.'+(m<10?'0'+m:m);}
+  function amtOf(row){return row.querySelector('input[name^="amt_"]');}
+  function chkOf(row){return row.querySelector('input[name^="inc_"]');}
+  function idOf(row){var c=chkOf(row);var m=c&&c.name.match(/^inc_(\d+)$/);return m?parseInt(m[1],10):null;}
+  function sync(form){
+    if(!form||!form.querySelector('input[name="method"]'))return;
+    var r=form.querySelector('input[name="method"]:checked');
+    var equal=!r||r.value==='equal';
+    var rows=Array.prototype.slice.call(form.querySelectorAll('.share-row'));
+    rows.forEach(function(row){var a=amtOf(row);if(a)a.readOnly=equal;});
+    if(!equal)return;
+    var totalEl=form.querySelector('input[name="amount"]');
+    var total=parseOre(totalEl?totalEl.value:'');
+    rows.forEach(function(row){var a=amtOf(row);if(a)a.value='';});
+    var ticked=rows.filter(function(row){var c=chkOf(row);return c&&c.checked;});
+    ticked.sort(function(a,b){return idOf(a)-idOf(b);});
+    var n=ticked.length;
+    if(total===null||n===0)return;
+    var base=Math.floor(total/n), rem=total-base*n;
+    ticked.forEach(function(row,i){var a=amtOf(row);if(a)a.value=fmtOre(base+(i<rem?1:0));});
+  }
+  function onEvt(e){
+    var t=e.target;
+    if(!t||!t.name)return;
+    if(t.name==='amount'||t.name==='method'||/^inc_\d+$/.test(t.name))sync(t.form||t.closest('form'));
+  }
+  document.addEventListener('input',onEvt);
+  document.addEventListener('change',onEvt);
+  function init(){var m=document.querySelector('form input[name="method"]');if(m)sync(m.form);}
+  document.addEventListener('DOMContentLoaded',init);
+  document.addEventListener('htmx:load',init);
+})();
+"#;
 
 // --- Inline icons (stroke uses currentColor; sized via width/height, tuned in CSS) ----
 
@@ -344,7 +400,7 @@ fn layout(title: &str, wrap_extra: &str, body: Markup) -> Markup {
                 title { (title) }
                 style { (PreEscaped(STYLES)) }
                 script src="/assets/htmx-2.0.4.min.js" defer {}
-                script { (PreEscaped(INLINE_JS)) }
+                script { (PreEscaped(INLINE_JS)) (PreEscaped(FORM_JS)) }
             }
             body hx-boost="true" {
                 main class={ "wrap " (wrap_extra) } { (body) }
